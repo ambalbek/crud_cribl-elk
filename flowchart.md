@@ -36,7 +36,14 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    CLIENT([Client logs in]) --> PORTAL["/cribl/portal — Onboarding Form\nUsername + Name auto-populated\nAPM ID, App Name, Region,\nLog Dest, Log Type, Groups"]
+    CLIENT([Client logs in]) --> CHECK_ENT["/cribl/entitlements\nCheck entitlement groups"]
+    CHECK_ENT --> HAS_ENT{Required group\nalready exists?}
+
+    HAS_ENT -- No --> IIQ["Submit IIQ request\n(external — iiq_url in config)\nRequest AD group access"]
+    IIQ --> WAIT["Wait for IIQ approval\n+ group provisioned to AD"]
+    WAIT --> HAS_ENT
+
+    HAS_ENT -- Yes --> PORTAL["/cribl/portal — Onboarding Form\nUsername + Name auto-populated\nAPM ID, App Name, Region,\nLog Dest, Log Type, Groups"]
     PORTAL --> ES_INDEX["POST /cribl/portal/api/submit\n→ Index to Elasticsearch\n→ Returns REQ-YYYYMMDD-XXXXXXXX"]
     ES_INDEX --> PENDING["ES Document\nstatus = pending"]
 

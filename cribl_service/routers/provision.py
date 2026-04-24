@@ -17,11 +17,6 @@ from ..deps import CriblClient, get_cribl_client
 router = APIRouter(prefix="/api/v1/m/{worker_group}")
 
 
-class ProvisionRequest:
-    """Parsed from the JSON body."""
-    pass
-
-
 @router.post("/provision")
 def provision(
     worker_group: str,

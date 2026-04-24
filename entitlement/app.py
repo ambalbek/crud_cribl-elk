@@ -22,8 +22,15 @@ app = Flask(__name__, static_folder='public')
 # Load config
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
 log.info("Loading config from %s", CONFIG_PATH)
-with open(CONFIG_PATH, 'r') as f:
-    config = json.load(f)
+try:
+    with open(CONFIG_PATH, 'r') as f:
+        config = json.load(f)
+except FileNotFoundError:
+    log.error("config.json not found at %s — copy config.json.example and fill in your cluster details", CONFIG_PATH)
+    raise SystemExit(1)
+except json.JSONDecodeError as exc:
+    log.error("config.json is not valid JSON: %s", exc)
+    raise SystemExit(1)
 log.info("Loaded %d cluster(s): %s", len(config['clusters']),
          ', '.join(c['name'] for c in config['clusters']))
 
@@ -149,4 +156,4 @@ def get_entitlements():
 
 if __name__ == '__main__':
     log.info("ELK Entitlement Viewer running at http://localhost:8282")
-    app.run(host='0.0.0.0', port=8282, debug=True)
+    app.run(host='0.0.0.0', port=8282, debug=False)
