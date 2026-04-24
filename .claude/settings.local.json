@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls C:/Users/azal8/OneDrive/Desktop/projects/crud_cribl-elk/*.py)",
+      "Bash(pip install:*)",
+      "Bash(python:*)"
+    ]
+  }
+}

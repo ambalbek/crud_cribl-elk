@@ -1,0 +1,107 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    volumes:
+      - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"   # OTLP gRPC (internal only)
+      - "127.0.0.1:4318:4318"   # OTLP HTTP (internal only)
+      - "127.0.0.1:8888:8888"   # Collector metrics
+
+  cribl-framework:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:5000:5000"     # bind on all interfaces — lock down with firewall to bastion IP only
+    volumes:
+      - ./config.json:/app/config.json:ro          # secrets never in image
+      - ./cribl_snapshots:/app/cribl_snapshots     # persist snapshots across restarts
+    environment:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      - CRIBL_SERVICE_URL=http://cribl_service:8001
+      - ECE_SERVICE_URL=http://ece_service:8002
+    depends_on:
+      cribl_service:
+        condition: service_healthy
+      ece_service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5000/cribl/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  cribl_service:
+    build:
+      context: .                              # project root — needed to COPY shared .py files
+      dockerfile: cribl_service/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8001"                # internal only; cribl-framework reaches it via service name
+    env_file:
+      - cribl_service/.env.example            # override with a real .env in production
+    environment:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      - CRIBL_BASE_URL=${CRIBL_BASE_URL:-}
+      - CRIBL_TOKEN=${CRIBL_TOKEN:-}
+      - CRIBL_USERNAME=${CRIBL_USERNAME:-}
+      - CRIBL_PASSWORD=${CRIBL_PASSWORD:-}
+      - CRIBL_SKIP_SSL=${CRIBL_SKIP_SSL:-false}
+      - CRIBL_TIMEOUT=${CRIBL_TIMEOUT:-30}
+      - CRIBL_DEFAULT_WORKSPACE=${CRIBL_DEFAULT_WORKSPACE:-default}
+      - CRIBL_DEFAULT_ROUTES_TABLE=${CRIBL_DEFAULT_ROUTES_TABLE:-default}
+      - CRIBL_MIN_EXISTING_ROUTES=${CRIBL_MIN_EXISTING_ROUTES:-1}
+      - CRIBL_SNAPSHOT_DIR=${CRIBL_SNAPSHOT_DIR:-cribl_snapshots}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  ece_service:
+    build:
+      context: .                              # project root — needed to COPY role_rm.py + shared .py files
+      dockerfile: ece_service/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8002:8002"                # internal only
+    volumes:
+      - ./ops_rm_r_templates_output:/app/ops_rm_r_templates_output  # ELK template output
+    env_file:
+      - ece_service/.env.example              # override with a real .env in production
+    environment:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      # Elasticsearch — nonprod
+      - ECE_ES_URL=${ECE_ES_URL:-}
+      - ECE_ES_TOKEN=${ECE_ES_TOKEN:-}
+      - ECE_ES_USERNAME=${ECE_ES_USERNAME:-}
+      - ECE_ES_PASSWORD=${ECE_ES_PASSWORD:-}
+      # Elasticsearch — prod
+      - ECE_ES_URL_PROD=${ECE_ES_URL_PROD:-}
+      - ECE_ES_TOKEN_PROD=${ECE_ES_TOKEN_PROD:-}
+      - ECE_ES_USERNAME_PROD=${ECE_ES_USERNAME_PROD:-}
+      - ECE_ES_PASSWORD_PROD=${ECE_ES_PASSWORD_PROD:-}
+      # Kibana
+      - ECE_KIBANA_URL=${ECE_KIBANA_URL:-}
+      - ECE_KIBANA_TOKEN=${ECE_KIBANA_TOKEN:-}
+      - ECE_KIBANA_USERNAME=${ECE_KIBANA_USERNAME:-}
+      - ECE_KIBANA_PASSWORD=${ECE_KIBANA_PASSWORD:-}
+      - ECE_SKIP_SSL=${ECE_SKIP_SSL:-false}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

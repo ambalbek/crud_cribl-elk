@@ -1,0 +1,1130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cribl Framework — Service Catalog</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #f8fafc;
+      --surface: #ffffff;
+      --border:  #e2e8f0;
+      --accent:  #e53e3e;
+      --accent2: #0284c7;
+      --text:    #1e293b;
+      --muted:   #64748b;
+      --success: #16a34a;
+      --warning: #d97706;
+      --radius:  8px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .logo-icon {
+      width: 32px; height: 32px;
+      background: var(--accent);
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+    .logo-text { font-weight: 700; font-size: 1.05rem; }
+    .logo-text a { color: inherit; text-decoration: none; }
+    .badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-weight: 600;
+      letter-spacing: .4px;
+      text-transform: uppercase;
+      background: #dbeafe;
+      color: var(--accent2);
+    }
+    .nav-links { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .84rem;
+      padding: 5px 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      transition: all .15s;
+    }
+    .nav-links a:hover,
+    .nav-links a.active { color: var(--text); border-color: var(--muted); }
+    .nav-links a.active { background: var(--bg); font-weight: 600; }
+
+    /* ── Main ── */
+    main {
+      flex: 1;
+      max-width: 1500px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px 2rem 80px;
+    }
+
+    /* ── Controls / Toolbar ── */
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .controls input[type="text"] {
+      flex: 1;
+      min-width: 220px;
+      padding: 9px 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      outline: none;
+      background: var(--surface);
+      color: var(--text);
+      transition: border-color .2s;
+    }
+    .controls input[type="text"]:focus { border-color: var(--accent2); }
+    .controls select {
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .btn {
+      padding: 9px 18px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: opacity .15s;
+      white-space: nowrap;
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-primary   { background: var(--accent2); color: #fff; }
+    .btn-primary:hover:not(:disabled)   { opacity: .85; }
+    .btn-secondary { background: #e0f2fe; color: var(--accent2); }
+    .btn-secondary:hover { background: #bae6fd; }
+    .btn-danger    { background: #fee2e2; color: var(--accent); border: 1px solid #fca5a5; }
+    .btn-danger:hover { background: #fecaca; }
+    .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+    /* ── Stats bar ── */
+    .stats {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 20px;
+      min-width: 130px;
+    }
+    .stat-card .label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    .stat-card .value {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+      margin-top: 2px;
+    }
+
+    /* ── Pagination ── */
+    .pagination-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius) var(--radius) 0 0;
+      border-bottom: none;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .pagination-bar .info { font-size: 13px; color: var(--muted); }
+    .pagination-bar .info strong { color: var(--text); }
+    .pagination-controls { display: flex; align-items: center; gap: 5px; }
+    .pagination-controls button {
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--text);
+      transition: all .15s;
+    }
+    .pagination-controls button:hover:not(:disabled) { background: var(--bg); border-color: var(--accent2); }
+    .pagination-controls button:disabled { opacity: .4; cursor: not-allowed; }
+    .pagination-controls button.active { background: var(--accent2); color: #fff; border-color: var(--accent2); }
+    .pagination-controls select {
+      padding: 5px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 13px;
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    /* ── Table ── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0 0 var(--radius) var(--radius);
+      overflow-x: auto;
+      max-height: 68vh;
+      overflow-y: auto;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      background: var(--text);
+      color: #fff;
+      padding: 11px 12px;
+      text-align: left;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    thead th:hover { background: #334155; }
+    thead th .sort-arrow { margin-left: 4px; opacity: .4; font-size: 10px; }
+    thead th.sorted .sort-arrow { opacity: 1; }
+    thead th.no-sort { cursor: default; }
+    thead th.no-sort:hover { background: var(--text); }
+
+    .col-filters th {
+      background: var(--bg);
+      padding: 5px 6px;
+      position: sticky;
+      top: 38px;
+      z-index: 9;
+      cursor: default;
+    }
+    .col-filters input {
+      width: 100%;
+      padding: 4px 7px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 12px;
+      background: var(--surface);
+      color: var(--text);
+      outline: none;
+    }
+    .col-filters input:focus { border-color: var(--accent2); }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background .1s;
+    }
+    tbody tr:hover { background: #f0f7ff; }
+    tbody tr.selected { background: #dbeafe !important; }
+    tbody td { padding: 9px 12px; font-size: 13px; vertical-align: middle; }
+    td.actions-cell { cursor: default; }
+
+    /* ── Badges ── */
+    .badge-status, .badge-ilm, .badge-region {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .status-done       { background: #dcfce7; color: #166534; }
+    .status-pending    { background: #fef9c3; color: #854d0e; }
+    .status-error      { background: #fee2e2; color: #991b1b; }
+    .status-offboarded { background: #f1f5f9; color: var(--muted); }
+
+    .ilm-hot    { background: #fee2e2; color: #991b1b; }
+    .ilm-warm   { background: #fef3c7; color: #92400e; }
+    .ilm-cold   { background: #dbeafe; color: #1e40af; }
+    .ilm-frozen { background: #ccfbf1; color: #134e4a; }
+    .ilm-tiered { background: #f3e8ff; color: #6b21a8; }
+    .ilm-none   { background: #f1f5f9; color: var(--muted); }
+
+    .badge-region { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+
+    /* ── Loading / empty ── */
+    .loading { text-align: center; padding: 60px; color: var(--muted); }
+    .spinner {
+      display: inline-block;
+      width: 36px; height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent2);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+      margin-bottom: 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty-state { text-align: center; padding: 60px; color: var(--muted); }
+    .empty-state h3 { margin-bottom: 8px; color: var(--text); }
+
+    /* ── Alert ── */
+    .alert-error {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #b91c1c;
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 14px;
+      font-size: .88rem;
+      display: none;
+    }
+    .alert-error.visible { display: block; }
+
+    /* ══════════════════════════════════════════════════════════
+       Detail Drawer
+    ══════════════════════════════════════════════════════════ */
+    .drawer-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.3);
+      z-index: 200;
+    }
+    .drawer-overlay.open { display: block; }
+
+    .drawer {
+      position: fixed;
+      top: 0; right: 0;
+      width: 480px;
+      max-width: 100vw;
+      height: 100vh;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      box-shadow: -4px 0 24px rgba(0,0,0,.12);
+      z-index: 201;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform .25s ease;
+      overflow: hidden;
+    }
+    .drawer.open { transform: translateX(0); }
+
+    .drawer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .drawer-header h2 { font-size: 1rem; font-weight: 700; }
+    .drawer-close {
+      width: 30px; height: 30px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      font-size: 16px;
+      color: var(--muted);
+      transition: all .15s;
+    }
+    .drawer-close:hover { color: var(--text); border-color: var(--muted); }
+
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+    }
+
+    .drawer-section {
+      margin-bottom: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .drawer-section-title {
+      background: var(--bg);
+      padding: 9px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+    }
+    .drawer-section-title .toggle-icon { font-size: 10px; transition: transform .2s; }
+    .drawer-section-title.collapsed .toggle-icon { transform: rotate(-90deg); }
+    .drawer-section-body { padding: 12px 14px; }
+    .drawer-section-body.hidden { display: none; }
+
+    .drawer-kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 13px; }
+    .drawer-kv .k { color: var(--muted); font-weight: 500; }
+    .drawer-kv .v { word-break: break-all; }
+
+    .ent-list { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+    .ent-list li {
+      background: #f0f9ff;
+      border: 1px solid #bae6fd;
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 12px;
+      color: #0369a1;
+    }
+
+    .raw-json {
+      background: #0f172a;
+      border-radius: 4px;
+      padding: 12px;
+      font-size: 11.5px;
+      font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+      color: #94a3b8;
+      overflow-x: auto;
+      white-space: pre;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+
+    .drawer-actions {
+      padding: 14px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       Modals
+    ══════════════════════════════════════════════════════════ */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.5);
+      z-index: 300;
+      place-items: center;
+    }
+    .modal-overlay.open { display: grid; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: 460px;
+      max-width: 96vw;
+      padding: 28px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.2);
+    }
+    .modal h3 { font-size: 1.05rem; font-weight: 700; margin-bottom: 10px; }
+    .modal p { font-size: .9rem; color: var(--muted); margin-bottom: 20px; }
+    .modal .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+    /* Output modal */
+    .modal-output {
+      background: #0f172a;
+      color: #94a3b8;
+      border-radius: 6px;
+      padding: 14px;
+      font-size: 12px;
+      font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow-y: auto;
+      margin: 14px 0;
+      border: 1px solid #1e293b;
+    }
+    .rc-ok  { color: #22c55e; font-weight: 600; }
+    .rc-err { color: #ef4444; font-weight: 600; }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      padding: 24px;
+      color: var(--muted);
+      font-size: .82rem;
+      border-top: 1px solid var(--border);
+    }
+
+    @media (max-width: 768px) {
+      .controls { flex-direction: column; }
+      .controls input[type="text"] { width: 100%; }
+      .drawer { width: 100vw; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════ HEADER ══════════ -->
+<header>
+  <div class="logo-icon">&#128225;</div>
+  <span class="logo-text"><a href="/cribl/">Cribl Framework</a></span>
+  <span class="badge">Service Catalog</span>
+  <div class="nav-links">
+    <a href="{{ url_for('portal_index') }}">Portal</a>
+    <a href="{{ url_for('entitlements_page') }}">Entitlements</a>
+    <a href="{{ url_for('catalog_page') }}" class="active">Catalog</a>
+    {% if current_role == 'admin' %}
+    <a href="{{ url_for('cribl_app_page') }}">Pusher</a>
+    <a href="{{ url_for('portal_admin_update_status') }}">Admin</a>
+    {% endif %}
+    {% if current_user %}
+    <span style="color:var(--muted);font-size:.84rem;">{{ current_display_name }}</span>
+    <a href="{{ url_for('logout') }}" style="border-color:var(--accent);color:var(--accent);">Logout</a>
+    {% endif %}
+  </div>
+</header>
+
+<!-- ══════════ MAIN ══════════ -->
+<main>
+  <div id="alertError" class="alert-error" role="alert"></div>
+
+  <!-- Toolbar -->
+  <div class="controls">
+    <input type="text" id="searchInput" placeholder="Search APM ID, app name, REQ ID, destination...">
+    <select id="regionFilter">
+      <option value="">All Regions</option>
+    </select>
+    <select id="statusFilter">
+      <option value="">All Statuses</option>
+      <option value="done">Done</option>
+      <option value="pending">Pending</option>
+      <option value="error">Error</option>
+      <option value="offboarded">Offboarded</option>
+    </select>
+    <select id="ilmFilter">
+      <option value="">All ILM Tiers</option>
+      <option value="hot">Hot</option>
+      <option value="warm">Warm</option>
+      <option value="cold">Cold</option>
+      <option value="frozen">Frozen</option>
+      <option value="tiered">Tiered</option>
+      <option value="none">None</option>
+    </select>
+    <button class="btn btn-primary" id="refreshBtn" onclick="fetchCatalog()">Refresh</button>
+    <button class="btn btn-secondary" onclick="exportCSV()">Export CSV</button>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats" id="statsBar" style="display:none;">
+    <div class="stat-card">
+      <div class="label">Total Apps</div>
+      <div class="value" id="statTotal">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Onboarded</div>
+      <div class="value" id="statOnboarded">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Pending</div>
+      <div class="value" id="statPending">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Cribl Routes</div>
+      <div class="value" id="statRoutes">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">ELK Roles</div>
+      <div class="value" id="statRoles">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Showing</div>
+      <div class="value" id="statShowing">0</div>
+    </div>
+  </div>
+
+  <!-- Pagination top bar -->
+  <div class="pagination-bar" id="paginationBar" style="display:none;">
+    <div class="info" id="pageInfo"></div>
+    <div class="pagination-controls">
+      <span style="font-size:13px;color:var(--muted);">Rows/page:</span>
+      <select id="pageSizeSelect" onchange="changePageSize()">
+        <option value="50">50</option>
+        <option value="100" selected>100</option>
+        <option value="250">250</option>
+        <option value="0">All</option>
+      </select>
+      <button onclick="goToPage(1)"             id="btnFirst" title="First">&laquo;</button>
+      <button onclick="goToPage(currentPage-1)" id="btnPrev"  title="Prev">&lsaquo;</button>
+      <span   id="pageButtons"></span>
+      <button onclick="goToPage(currentPage+1)" id="btnNext"  title="Next">&rsaquo;</button>
+      <button onclick="goToPage(totalPages)"    id="btnLast"  title="Last">&raquo;</button>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap" id="tableWrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:36px;" class="no-sort">#</th>
+          <th data-col="apm"    onclick="sortBy('apm')">APM ID <span class="sort-arrow">&#9650;</span></th>
+          <th data-col="name"   onclick="sortBy('name')">App Name <span class="sort-arrow">&#9650;</span></th>
+          <th data-col="req_id" onclick="sortBy('req_id')">REQ ID <span class="sort-arrow">&#9650;</span></th>
+          <th data-col="region" onclick="sortBy('region')">Region <span class="sort-arrow">&#9650;</span></th>
+          <th data-col="routes" onclick="sortBy('routes')">Routes <span class="sort-arrow">&#9650;</span></th>
+          <th data-col="ilm_tier" onclick="sortBy('ilm_tier')">ILM Tier <span class="sort-arrow">&#9650;</span></th>
+          <th data-col="roles"  onclick="sortBy('roles')">Roles <span class="sort-arrow">&#9650;</span></th>
+          <th data-col="status" onclick="sortBy('status')">Status <span class="sort-arrow">&#9650;</span></th>
+          <th class="no-sort" style="width:130px;">Actions</th>
+        </tr>
+        <tr class="col-filters">
+          <th></th>
+          <th><input type="text" id="fApm"    placeholder="Filter..." oninput="applyFilters()"></th>
+          <th><input type="text" id="fName"   placeholder="Filter..." oninput="applyFilters()"></th>
+          <th><input type="text" id="fReqId"  placeholder="Filter..." oninput="applyFilters()"></th>
+          <th></th>
+          <th></th>
+          <th></th>
+          <th></th>
+          <th></th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tableBody">
+        <tr>
+          <td colspan="10">
+            <div class="loading">
+              <div class="spinner"></div>
+              <div>Loading service catalog...</div>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<footer>Cribl Framework — Service Catalog</footer>
+
+<!-- ══════════ DETAIL DRAWER ══════════ -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-header">
+    <h2 id="drawerTitle">App Details</h2>
+    <button class="drawer-close" onclick="closeDrawer()" title="Close">&#10005;</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+  <div class="drawer-actions" id="drawerActions"></div>
+</div>
+
+<!-- ══════════ OFFBOARD CONFIRMATION MODAL ══════════ -->
+<div class="modal-overlay" id="offboardModal">
+  <div class="modal">
+    <h3>&#9888; Confirm Offboard</h3>
+    <p id="offboardMsg">This will remove Cribl routes and ELK roles for this app.</p>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:18px;font-size:.88rem;">
+      <input type="checkbox" id="offboardDryRun" checked>
+      Dry run (inspect only — no changes made)
+    </label>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeOffboardModal()">Cancel</button>
+      <button class="btn btn-danger"    id="offboardConfirmBtn" onclick="confirmOffboard()">Offboard</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ RE-ONBOARD / OFFBOARD RESULT MODAL ══════════ -->
+<div class="modal-overlay" id="resultModal">
+  <div class="modal" style="width:600px;">
+    <h3 id="resultTitle">Result</h3>
+    <div class="modal-output" id="resultOutput"></div>
+    <p id="resultRc" style="margin-bottom:10px;font-size:.88rem;"></p>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="closeResultModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* ── State ── */
+  let allData      = [];
+  let filteredData = [];
+  let currentSort  = { col: 'name', asc: true };
+  let currentPage  = 1;
+  let pageSize     = 100;
+  let totalPages   = 1;
+  let selectedApm  = null;
+  let offboardApm  = null;
+  let offboardName = null;
+
+  const IS_ADMIN = {{ 'true' if current_role == 'admin' else 'false' }};
+
+  /* ── Fetch ── */
+  async function fetchCatalog() {
+    const btn   = document.getElementById('refreshBtn');
+    const tbody = document.getElementById('tableBody');
+    const alert = document.getElementById('alertError');
+
+    alert.classList.remove('visible');
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+    document.getElementById('paginationBar').style.display = 'none';
+    tbody.innerHTML = '<tr><td colspan="10"><div class="loading"><div class="spinner"></div><div>Fetching live data from Cribl &amp; Elasticsearch...</div></div></td></tr>';
+
+    try {
+      const resp = await fetch('/cribl/api/catalog');
+      const data = await resp.json();
+      if (data.errors) {
+        alert.textContent = data.errors.join(' ');
+        alert.classList.add('visible');
+        tbody.innerHTML = '<tr><td colspan="10"><div class="empty-state"><h3>Error</h3><p>' + esc(data.errors.join(' ')) + '</p></div></td></tr>';
+        return;
+      }
+      allData = data;
+      populateDropdowns();
+      currentPage = 1;
+      applyFilters();
+    } catch (err) {
+      tbody.innerHTML = '<tr><td colspan="10"><div class="empty-state"><h3>Connection Error</h3><p>' + esc(err.message) + '</p></div></td></tr>';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Refresh';
+    }
+  }
+
+  function populateDropdowns() {
+    const regions = [...new Set(allData.map(d => d.region).filter(Boolean))].sort();
+    const rSel = document.getElementById('regionFilter');
+    rSel.innerHTML = '<option value="">All Regions</option>';
+    regions.forEach(r => {
+      const o = document.createElement('option');
+      o.value = r; o.textContent = r;
+      rSel.appendChild(o);
+    });
+  }
+
+  /* ── Filter + Sort ── */
+  function applyFilters() {
+    const search    = document.getElementById('searchInput').value.toLowerCase();
+    const region    = document.getElementById('regionFilter').value;
+    const status    = document.getElementById('statusFilter').value;
+    const ilm       = document.getElementById('ilmFilter').value;
+    const fApm      = document.getElementById('fApm').value.toLowerCase();
+    const fName     = document.getElementById('fName').value.toLowerCase();
+    const fReqId    = document.getElementById('fReqId').value.toLowerCase();
+
+    filteredData = allData.filter(row => {
+      if (region && row.region !== region) return false;
+      if (status && row.status !== status) return false;
+      if (ilm    && row.ilm_tier !== ilm)  return false;
+      if (fApm   && !(row.apm  || '').toLowerCase().includes(fApm))    return false;
+      if (fName  && !(row.name || '').toLowerCase().includes(fName))   return false;
+      if (fReqId && !(row.req_id || '').toLowerCase().includes(fReqId)) return false;
+      if (search) {
+        const hay = [row.apm, row.name, row.req_id, row.region, row.dest,
+                     row.worker_group, row.status].join(' ').toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
+
+    filteredData.sort((a, b) => {
+      const col = currentSort.col;
+      let va = col === 'routes' || col === 'roles' ? (a[col] || 0) : String(a[col] || '').toLowerCase();
+      let vb = col === 'routes' || col === 'roles' ? (b[col] || 0) : String(b[col] || '').toLowerCase();
+      const cmp = typeof va === 'number' ? va - vb : va.localeCompare(vb);
+      return currentSort.asc ? cmp : -cmp;
+    });
+
+    updateStats();
+    updatePagination();
+    renderTable();
+  }
+
+  function updateStats() {
+    const d = filteredData;
+    document.getElementById('statTotal').textContent     = allData.length;
+    document.getElementById('statOnboarded').textContent = allData.filter(r => r.status === 'done').length;
+    document.getElementById('statPending').textContent   = allData.filter(r => r.status === 'pending').length;
+    document.getElementById('statRoutes').textContent    = allData.reduce((s, r) => s + (r.routes || 0), 0);
+    document.getElementById('statRoles').textContent     = allData.reduce((s, r) => s + (r.roles  || 0), 0);
+    document.getElementById('statShowing').textContent   = d.length;
+    document.getElementById('statsBar').style.display = 'flex';
+  }
+
+  function updatePagination() {
+    if (pageSize === 0) { totalPages = 1; currentPage = 1; }
+    else {
+      totalPages  = Math.max(1, Math.ceil(filteredData.length / pageSize));
+      if (currentPage > totalPages) currentPage = totalPages;
+    }
+    const bar = document.getElementById('paginationBar');
+    bar.style.display = 'flex';
+    const start = pageSize === 0 ? 1 : (currentPage - 1) * pageSize + 1;
+    const end   = pageSize === 0 ? filteredData.length : Math.min(currentPage * pageSize, filteredData.length);
+    document.getElementById('pageInfo').innerHTML =
+      'Showing <strong>' + (filteredData.length > 0 ? start : 0) + '</strong>–<strong>' + end +
+      '</strong> of <strong>' + filteredData.length + '</strong>' +
+      (filteredData.length < allData.length ? ' (filtered from ' + allData.length + ')' : '');
+
+    document.getElementById('btnFirst').disabled = currentPage <= 1;
+    document.getElementById('btnPrev').disabled  = currentPage <= 1;
+    document.getElementById('btnNext').disabled  = currentPage >= totalPages;
+    document.getElementById('btnLast').disabled  = currentPage >= totalPages;
+
+    const container = document.getElementById('pageButtons');
+    container.innerHTML = '';
+    const max = 7;
+    let sp = Math.max(1, currentPage - Math.floor(max / 2));
+    let ep = Math.min(totalPages, sp + max - 1);
+    if (ep - sp < max - 1) sp = Math.max(1, ep - max + 1);
+    for (let i = sp; i <= ep; i++) {
+      const btn = document.createElement('button');
+      btn.textContent = i;
+      btn.onclick = (function(p) { return function() { goToPage(p); }; })(i);
+      if (i === currentPage) btn.className = 'active';
+      container.appendChild(btn);
+    }
+  }
+
+  function goToPage(p) {
+    if (p < 1) p = 1;
+    if (p > totalPages) p = totalPages;
+    currentPage = p;
+    updatePagination();
+    renderTable();
+    document.getElementById('tableWrap').scrollTop = 0;
+  }
+
+  function changePageSize() {
+    pageSize = parseInt(document.getElementById('pageSizeSelect').value);
+    currentPage = 1;
+    updatePagination();
+    renderTable();
+  }
+
+  function sortBy(col) {
+    if (currentSort.col === col) currentSort.asc = !currentSort.asc;
+    else { currentSort.col = col; currentSort.asc = true; }
+    document.querySelectorAll('thead tr:first-child th').forEach(th => {
+      th.classList.remove('sorted');
+      const arr = th.querySelector('.sort-arrow');
+      if (arr) arr.innerHTML = '&#9650;';
+    });
+    const th = document.querySelector('thead tr:first-child th[data-col="' + col + '"]');
+    if (th) {
+      th.classList.add('sorted');
+      th.querySelector('.sort-arrow').innerHTML = currentSort.asc ? '&#9650;' : '&#9660;';
+    }
+    currentPage = 1;
+    applyFilters();
+  }
+
+  /* ── Render table ── */
+  function renderTable() {
+    const tbody = document.getElementById('tableBody');
+    const start = pageSize === 0 ? 0 : (currentPage - 1) * pageSize;
+    const end   = pageSize === 0 ? filteredData.length : start + pageSize;
+    const page  = filteredData.slice(start, end);
+
+    if (page.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="10"><div class="empty-state"><h3>No apps found</h3><p>Try adjusting filters or click Refresh.</p></div></td></tr>';
+      return;
+    }
+
+    const rows = page.map((row, i) => {
+      const rowNum   = start + i + 1;
+      const isSelected = row.apm === selectedApm;
+      const actions = IS_ADMIN
+        ? '<td class="actions-cell" onclick="event.stopPropagation()">' +
+          '<button class="btn btn-sm btn-secondary" onclick="reonboard(\'' + esc(row.apm) + '\',\'' + esc(row.name) + '\',\'' + esc(row.region) + '\',\'' + esc(row.worker_group) + '\')" title="Re-onboard app">&#9654; Run</button> ' +
+          '<button class="btn btn-sm btn-danger"    onclick="offboard(\'' + esc(row.apm) + '\',\'' + esc(row.name) + '\')" title="Offboard app">&#10005; Off</button>' +
+          '</td>'
+        : '<td></td>';
+
+      return '<tr class="' + (isSelected ? 'selected' : '') + '" onclick="openDrawer(' + (start + i) + ')">' +
+        '<td style="color:#cbd5e1;font-size:11px;text-align:right;padding-right:8px;">' + rowNum + '</td>' +
+        '<td><strong>' + esc(row.apm) + '</strong></td>' +
+        '<td>' + esc(row.name) + '</td>' +
+        '<td style="font-size:12px;color:var(--muted);">' + esc(row.req_id) + '</td>' +
+        '<td><span class="badge-region">' + esc(row.region || '—') + '</span></td>' +
+        '<td style="text-align:center;">' + (row.routes || 0) + '</td>' +
+        '<td><span class="badge-ilm ilm-' + esc(row.ilm_tier || 'none') + '">' + esc(row.ilm_tier || 'none') + '</span></td>' +
+        '<td style="text-align:center;">' + (row.roles || 0) + '</td>' +
+        '<td><span class="badge-status status-' + esc(row.status || 'pending') + '">' + esc(row.status || 'pending') + '</span></td>' +
+        actions +
+        '</tr>';
+    });
+
+    tbody.innerHTML = rows.join('');
+  }
+
+  /* ── Drawer ── */
+  function openDrawer(idx) {
+    const row = filteredData[idx];
+    if (!row) return;
+    selectedApm = row.apm;
+    renderTable(); // refresh row highlight
+
+    document.getElementById('drawerTitle').textContent = row.name + ' (' + row.apm + ')';
+
+    /* Request Info */
+    const reqSection = makeDrawerSection('Request Info', `
+      <div class="drawer-kv">
+        <span class="k">APM ID</span>       <span class="v"><strong>${esc(row.apm)}</strong></span>
+        <span class="k">App Name</span>      <span class="v">${esc(row.name)}</span>
+        <span class="k">REQ ID</span>        <span class="v" style="font-family:monospace;font-size:12px;">${esc(row.req_id)}</span>
+        <span class="k">Region</span>        <span class="v"><span class="badge-region">${esc(row.region)}</span></span>
+        <span class="k">Status</span>        <span class="v"><span class="badge-status status-${esc(row.status || 'pending')}">${esc(row.status || 'pending')}</span></span>
+        <span class="k">Submitted By</span>  <span class="v">${esc(row.submitted_by || '—')}</span>
+        <span class="k">Date</span>          <span class="v">${esc(fmtDate(row.date))}</span>
+      </div>
+    `);
+
+    /* Cribl */
+    const criblSection = makeDrawerSection('Cribl', `
+      <div class="drawer-kv">
+        <span class="k">Worker Group</span>  <span class="v">${esc(row.worker_group || '—')}</span>
+        <span class="k">Routes</span>        <span class="v"><strong>${row.routes || 0}</strong></span>
+        <span class="k">Destination</span>   <span class="v" style="word-break:break-all;font-size:12px;">${esc(row.dest || '—')}</span>
+        <span class="k">Pipeline</span>      <span class="v">${esc(row.logstash_pipeline || '—')}</span>
+      </div>
+    `);
+
+    /* ELK */
+    const elkSection = makeDrawerSection('Elasticsearch', `
+      <div class="drawer-kv">
+        <span class="k">ILM Tier</span>         <span class="v"><span class="badge-ilm ilm-${esc(row.ilm_tier || 'none')}">${esc(row.ilm_tier || 'none')}</span></span>
+        <span class="k">Logstash Pipeline</span> <span class="v">${esc(row.logstash_pipeline || '—')}</span>
+        <span class="k">Kibana Dashboard</span>  <span class="v">${esc(row.kibana_dashboard || '—')}</span>
+        <span class="k">Role Mappings</span>     <span class="v"><strong>${row.roles || 0}</strong></span>
+      </div>
+    `);
+
+    /* Entitlements */
+    const ents = (row.entitlements || []);
+    const entHtml = ents.length
+      ? '<ul class="ent-list">' + ents.map(e => '<li>' + esc(e) + '</li>').join('') + '</ul>'
+      : '<span style="color:var(--muted);font-size:13px;">No entitlements recorded</span>';
+    const entSection = makeDrawerSection('Entitlement Groups (' + ents.length + ')', entHtml);
+
+    /* Raw JSON */
+    const rawSection = makeDrawerSection('Raw JSON', '<div class="raw-json">' + esc(JSON.stringify(row, null, 2)) + '</div>', true);
+
+    document.getElementById('drawerBody').innerHTML =
+      reqSection + criblSection + elkSection + entSection + rawSection;
+
+    /* Drawer actions (admin only) */
+    const actHtml = IS_ADMIN
+      ? '<button class="btn btn-secondary" style="flex:1;" onclick="reonboard(\'' + esc(row.apm) + '\',\'' + esc(row.name) + '\',\'' + esc(row.region) + '\',\'' + esc(row.worker_group) + '\')">&#9654; Re-onboard</button>' +
+        '<button class="btn btn-danger"    style="flex:1;" onclick="offboard(\'' + esc(row.apm) + '\',\'' + esc(row.name) + '\')">&#10005; Offboard</button>'
+      : '';
+    document.getElementById('drawerActions').innerHTML = actHtml;
+
+    document.getElementById('drawerOverlay').classList.add('open');
+    document.getElementById('drawer').classList.add('open');
+  }
+
+  function makeDrawerSection(title, bodyHtml, collapsed) {
+    const cls = collapsed ? ' collapsed' : '';
+    const bodyCls = collapsed ? ' hidden' : '';
+    return `
+      <div class="drawer-section">
+        <div class="drawer-section-title${cls}" onclick="toggleSection(this)">
+          ${esc(title)} <span class="toggle-icon">&#9660;</span>
+        </div>
+        <div class="drawer-section-body${bodyCls}">${bodyHtml}</div>
+      </div>`;
+  }
+
+  function toggleSection(titleEl) {
+    titleEl.classList.toggle('collapsed');
+    titleEl.nextElementSibling.classList.toggle('hidden');
+  }
+
+  function closeDrawer() {
+    selectedApm = null;
+    document.getElementById('drawerOverlay').classList.remove('open');
+    document.getElementById('drawer').classList.remove('open');
+    renderTable();
+  }
+
+  /* ── Offboard ── */
+  function offboard(apm, name) {
+    offboardApm  = apm;
+    offboardName = name;
+    document.getElementById('offboardMsg').textContent =
+      'Offboard ' + name + ' (' + apm + ')? This will remove Cribl routes and ELK role mappings for this app and mark it as offboarded.';
+    document.getElementById('offboardModal').classList.add('open');
+  }
+
+  async function confirmOffboard() {
+    const dryRun = document.getElementById('offboardDryRun').checked;
+    const btn    = document.getElementById('offboardConfirmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Working...';
+
+    try {
+      const resp = await fetch('/cribl/api/catalog/' + encodeURIComponent(offboardApm) + '?dry_run=' + dryRun, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await resp.json();
+      closeOffboardModal();
+      showResult(
+        (dryRun ? '[DRY RUN] ' : '') + 'Offboard: ' + offboardName,
+        JSON.stringify(data, null, 2),
+        resp.ok ? 0 : 1
+      );
+      if (resp.ok && !dryRun) {
+        await fetchCatalog();
+      }
+    } catch (err) {
+      closeOffboardModal();
+      showResult('Offboard Error', err.message, 1);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Offboard';
+    }
+  }
+
+  function closeOffboardModal() {
+    document.getElementById('offboardModal').classList.remove('open');
+  }
+
+  /* ── Re-onboard ── */
+  async function reonboard(apm, name, region, workerGroup) {
+    const payload = { apmid: apm, appname: name, region: region, worker_group: workerGroup };
+    showResult('Re-onboard: ' + name, 'Sending request to Cribl...', -1);
+
+    try {
+      const resp = await fetch('/cribl/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (data.errors) {
+        updateResult('Re-onboard: ' + name, data.errors.join('\n'), 1);
+      } else {
+        updateResult('Re-onboard: ' + name, data.output || '(no output)', data.returncode || 0);
+      }
+    } catch (err) {
+      updateResult('Re-onboard Error', err.message, 1);
+    }
+  }
+
+  /* ── Result modal ── */
+  function showResult(title, output, rc) {
+    document.getElementById('resultTitle').textContent  = title;
+    document.getElementById('resultOutput').textContent = output;
+    const rcEl = document.getElementById('resultRc');
+    if (rc === -1) {
+      rcEl.innerHTML = '<span style="color:var(--muted);">Running...</span>';
+    } else {
+      rcEl.innerHTML = 'Exit code: <span class="' + (rc === 0 ? 'rc-ok' : 'rc-err') + '">' + rc + '</span>';
+    }
+    document.getElementById('resultModal').classList.add('open');
+  }
+
+  function updateResult(title, output, rc) {
+    document.getElementById('resultTitle').textContent  = title;
+    document.getElementById('resultOutput').textContent = output;
+    const rcEl = document.getElementById('resultRc');
+    rcEl.innerHTML = 'Exit code: <span class="' + (rc === 0 ? 'rc-ok' : 'rc-err') + '">' + rc + '</span>';
+  }
+
+  function closeResultModal() {
+    document.getElementById('resultModal').classList.remove('open');
+  }
+
+  /* ── Export CSV ── */
+  function exportCSV() {
+    if (!filteredData.length) return;
+    const headers = ['APM ID', 'App Name', 'REQ ID', 'Region', 'Worker Group',
+                     'Routes', 'ILM Tier', 'Roles', 'Status', 'Submitted By', 'Date', 'Destination'];
+    const rows = [headers.join(',')];
+    filteredData.forEach(row => {
+      rows.push([
+        csvEsc(row.apm), csvEsc(row.name), csvEsc(row.req_id), csvEsc(row.region),
+        csvEsc(row.worker_group), row.routes || 0, csvEsc(row.ilm_tier),
+        row.roles || 0, csvEsc(row.status), csvEsc(row.submitted_by),
+        csvEsc(row.date), csvEsc(row.dest),
+      ].join(','));
+    });
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'service_catalog_' + new Date().toISOString().slice(0,10) + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /* ── Utilities ── */
+  function esc(str) {
+    const div = document.createElement('div');
+    div.textContent = String(str == null ? '' : str);
+    // Also escape single quotes so values are safe inside onclick='...' attributes
+    return div.innerHTML.replace(/'/g, '&#39;');
+  }
+
+  function csvEsc(str) {
+    str = String(str == null ? '' : str);
+    if (str.indexOf(',') !== -1 || str.indexOf('"') !== -1 || str.indexOf('\n') !== -1) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleString(); } catch(e) { return iso; }
+  }
+
+  /* ── Event wiring ── */
+  document.getElementById('searchInput').addEventListener('input',  () => { currentPage = 1; applyFilters(); });
+  document.getElementById('regionFilter').addEventListener('change', () => { currentPage = 1; applyFilters(); });
+  document.getElementById('statusFilter').addEventListener('change', () => { currentPage = 1; applyFilters(); });
+  document.getElementById('ilmFilter').addEventListener('change',    () => { currentPage = 1; applyFilters(); });
+
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); document.getElementById('searchInput').focus(); }
+    if (e.key === 'Escape') { closeDrawer(); closeOffboardModal(); closeResultModal(); }
+  });
+
+  /* ── Boot ── */
+  fetchCatalog();
+</script>
+</body>
+</html>
