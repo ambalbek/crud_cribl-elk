@@ -31,10 +31,11 @@ Unified platform for application onboarding into **Cribl Stream** and **ELK**. T
 15. [Docker](#docker)
 16. [Serving via Apache httpd (bastion)](#serving-via-apache-httpd-bastion)
 17. [All CLI Flags](#all-cli-flags)
-18. [Logging](#logging)
-19. [Safety Features](#safety-features)
-20. [Rolling Back a Change](#rolling-back-a-change)
-21. [Troubleshooting](#troubleshooting)
+18. [Observability (OpenTelemetry)](#observability-opentelemetry)
+19. [Logging](#logging)
+20. [Safety Features](#safety-features)
+21. [Rolling Back a Change](#rolling-back-a-change)
+22. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -151,7 +152,7 @@ The framework uses **local account authentication** with role-based access contr
 3. Unchecks Dry Run, clicks Run
    → Routes created in Cribl
    → Destinations created in Cribl
-   → ELK roles/role-mappings created (if using rode_rm)
+   → ELK roles/role-mappings created (if using role_rm)
    → Request status auto-updated to "done" in Elasticsearch
 
 4. Client's request is marked as completed
@@ -196,9 +197,11 @@ cribl-framework-ent/
 ├── cribl_config.py                 # Shared — config loading and workspace resolution
 ├── cribl_utils.py                  # Shared — utilities (I/O, prompts, HTTP session)
 ├── cribl_logger.py                 # Shared — logging setup
+├── otel_setup.py                   # Shared — OpenTelemetry bootstrap (tracing, JSON logging)
 │
 ├── Dockerfile                      # cribl-framework image (python:3.13-slim, port 5000)
 ├── docker-compose.yml              # Three services: cribl-framework :5000, cribl_service :8001, ece_service :8002
+├── otel-collector-config.yml       # OTel Collector config (OTLP receivers, exporters for Jaeger/Elastic/Tempo)
 ├── requirements.txt                # Flask service dependencies
 │
 ├── config.json                     # YOUR config (credentials + workspaces) — never commit
@@ -216,6 +219,16 @@ cribl-framework-ent/
 ├── elk-index-template.json         # ES index template for onboarding requests
 ├── elk-role.json                   # ES role for portal writer
 │
+├── generate_pptx.py                # Script to generate GitOps ARO demo PPTX deck
+├── Cribl_GitOps_ARO_Demo.pptx      # Generated demo deck
+├── flask-cribl.tar                 # Archived build artifact
+│
+├── c4-diagrams.md                  # C4 architecture diagrams
+├── flowchart.md                    # General flowchart documentation
+├── flowchart-python.md             # Python flowchart
+├── flowchart-visio.md              # Visio flowchart
+├── flowchart-gitops-aro.md         # GitOps on Azure Red Hat OpenShift flowchart
+│
 ├── templates/                      # Jinja2 templates for cribl-framework
 │   ├── index.html
 │   ├── request.html
@@ -224,6 +237,14 @@ cribl-framework-ent/
 │   ├── entitlements.html
 │   ├── catalog.html                # Service Catalog dashboard
 │   └── login.html
+│
+├── entitlement/                    # Standalone entitlement lookup app (Flask)
+│   ├── app.py                      # Entitlement lookup Flask app
+│   ├── config.json.example         # Config template for standalone mode
+│   ├── entitlement.conf            # Apache/WSGI config
+│   ├── requirements.txt            # Dependencies
+│   └── public/
+│       └── index.html              # Static frontend
 │
 ├── ece_service/                    # FastAPI microservice — ECE/ELK API (port 8002)
 │   ├── __init__.py
@@ -237,6 +258,7 @@ cribl-framework-ent/
 │   ├── Dockerfile                  # Build context = project root (copies role_rm.py + shared .py)
 │   ├── .env.example                # Template for ECE_* environment variables
 │   └── routers/
+│       ├── __init__.py
 │       ├── roles.py                # ES security roles CRUD + /generate + /provision
 │       ├── role_mappings.py        # ES security role-mappings CRUD
 │       ├── indexes.py              # ES index + index-template CRUD
@@ -256,6 +278,7 @@ cribl-framework-ent/
 │   ├── Dockerfile                  # Build context = project root (copies shared .py files)
 │   ├── .env.example                # Template for CRIBL_* environment variables
 │   └── routers/
+│       ├── __init__.py
 │       ├── routes.py               # GET/PATCH table, POST route (smart insert), DELETE route
 │       ├── destinations.py         # Full CRUD for outputs (/system/outputs)
 │       ├── pipelines.py            # Full CRUD for pipelines
@@ -888,6 +911,35 @@ Browser → https://bastion/cribl/app
 | `--skip-ssl` | false | Disable SSL |
 | `--log-level` | `INFO` | Log verbosity |
 | `--yes` | false | Skip confirmation |
+
+---
+
+## Observability (OpenTelemetry)
+
+All three services share `otel_setup.py` for distributed tracing and structured logging.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `OTEL_SERVICE_NAME` | *(auto)* | Override the service name reported to the collector |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `""` | OTLP endpoint, e.g. `http://otel-collector:4318`. If empty, spans are collected but not exported |
+| `OTEL_TRACES_EXPORTER` | `""` | Set to `console` to print spans to stdout (dev/debug) |
+| `LOG_FORMAT` | `""` | Set to `json` for structured JSON log output with trace_id/span_id fields |
+
+### OTel Collector
+
+`otel-collector-config.yml` configures the OpenTelemetry Collector sidecar:
+
+- **Receivers:** OTLP over gRPC (`:4317`) and HTTP (`:4318`)
+- **Processors:** batch (5s / 512 spans), resource attribute injection
+- **Exporters:** debug (stdout) by default — uncomment blocks for Jaeger, Elastic APM, or Grafana Tempo
+
+### Auto-instrumentation
+
+`otel_setup.py` automatically instruments outbound HTTP calls via:
+- `opentelemetry-instrumentation-requests` (sync `requests` library)
+- `opentelemetry-instrumentation-httpx` (async `httpx` library)
 
 ---
 

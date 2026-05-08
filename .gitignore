@@ -16,7 +16,12 @@ dist/
 build/
 
 # Cribl snapshots (can contain route/destination data)
-cribl_snapshots/
+cribl_snapshots/*
+!cribl_snapshots/.gitkeep
+
+# ELK template output
+ops_rm_r_templates_output/*
+!ops_rm_r_templates_output/.gitkeep
 
 # Logs
 *.log
@@ -29,3 +34,9 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.claudeignore
+.claude/*
+cribl_snapshots/
+ops_rm_r_templates_output/
+*.pptx
+generate_pptx.py

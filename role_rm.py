@@ -31,14 +31,14 @@ This how to use below script, all you need is from command line execute, dont fo
         - requests
     Example usage:
         # Generate templates only (no API calls):
-        ./rode_rm.py --app_name=APP00000001-RESTAIL-STATUS-TRACKING-SYS --apmid=app00000001 --skip-elk --skip-cribl
+        ./role_rm.py --app_name=APP00000001-RESTAIL-STATUS-TRACKING-SYS --apmid=app00000001 --skip-elk --skip-cribl
 
         # ELK + Cribl (default order: elk first):
-        ./rode_rm.py --app_name=APP00000001-RESTAIL-STATUS-TRACKING-SYS --apmid=app00000001 \
+        ./role_rm.py --app_name=APP00000001-RESTAIL-STATUS-TRACKING-SYS --apmid=app00000001 \
             --elk-url=https://elk.example.com:9200 --elk-user=elastic --workspace=dev
 
         # Cribl first, then ELK:
-        ./rode_rm.py --app_name=APP00000001-RESTAIL --apmid=app00000001 \
+        ./role_rm.py --app_name=APP00000001-RESTAIL --apmid=app00000001 \
             --elk-url=https://elk.example.com:9200 --elk-user=elastic --workspace=prod --allow-prod \
             --order=cribl-first --dry-run
 """
@@ -268,7 +268,7 @@ def save_templates(apps, configurations):
         with open(f"ops_rm_r_templates_output/role_mappings_{apmid}_pushable.json", "w") as f:
             json.dump(pushable_role_mappings, f, indent=2)
 
-    logging.getLogger("rode_rm").info("Templates for %d app(s) saved in 'ops_rm_r_templates_output/' directory.", len(apps))
+    logging.getLogger("role_rm").info("Templates for %d app(s) saved in 'ops_rm_r_templates_output/' directory.", len(apps))
 
 
 # ── Cribl push (framework pattern) ───────────────────────────────────────────
@@ -481,7 +481,7 @@ def main():
     args = parser.parse_args()
 
     # logging
-    log = logging.getLogger("rode_rm")
+    log = logging.getLogger("role_rm")
     log.setLevel(getattr(logging, args.log_level))
     if not log.handlers:
         h = logging.StreamHandler(sys.stdout)

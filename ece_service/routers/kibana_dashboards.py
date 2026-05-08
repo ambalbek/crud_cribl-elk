@@ -38,7 +38,7 @@ def get_dashboard(
     return client.get_dashboard(dashboard_id)
 
 
-@router.post("", status_code=200)
+@router.post("", status_code=201)
 def create_dashboard(
     body: dict[str, Any] = Body(...),
     client: ECEClient = Depends(get_ece_client),

@@ -27,7 +27,7 @@
   "base_url": "http://localhost:9000",
   "cribl_urls": ["http://localhost:9000"],
   "elk_urls": [],
-  "skip_ssl": true,
+  "skip_ssl": false,
 
   "credentials": {
     "_comment": "Leave token empty to use username+password login. CLI flags and env vars override these.",
@@ -109,7 +109,7 @@
     "username": "",
     "password": "",
     "index":    "cribl-onboarding-requests",
-    "skip_ssl": true,
+    "skip_ssl": false,
     "timeout":  30
   },
 

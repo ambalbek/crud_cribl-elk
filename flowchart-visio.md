@@ -136,7 +136,7 @@ Each section describes shapes, connections, and swim lanes.
 | Entitlements API | /api/entitlements | Allowed | Allowed | Yes |
 | Cribl Pusher UI | /cribl/app | Blocked (403) | Allowed | Yes (Admin) |
 | Run Pusher API | /cribl/api/run-pusher | Blocked (403) | Allowed | Yes (Admin) |
-| Run RODE-RM API | /cribl/api/run-rode-rm | Blocked (403) | Allowed | Yes (Admin) |
+| Run ROLE-RM API | /cribl/api/run-role-rm | Blocked (403) | Allowed | Yes (Admin) |
 | Admin Panel | /portal/admin/update-status | Blocked (403) | Allowed | Yes (Admin) |
 
 ---

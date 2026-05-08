@@ -583,7 +583,7 @@
         </div>
 
         <button class="btn-primary" id="t2_run_btn" onclick="submitRodeRm()">
-          Run rode_rm
+          Run role_rm
         </button>
       </div>
 
@@ -834,10 +834,10 @@ async function submitRodeRm() {
   statusEl.innerHTML   = '';
   cmdEl.innerHTML      = '';
   outputEl.textContent = 'Running...';
-  setLoading('t2_run_btn', 'Run rode_rm', true);
+  setLoading('t2_run_btn', 'Run role_rm', true);
 
   try {
-    const res  = await fetch('/cribl/api/run-rode-rm', { method: 'POST', body: fd });
+    const res  = await fetch('/cribl/api/run-role-rm', { method: 'POST', body: fd });
     const data = await res.json();
 
     if (res.status === 400) {
@@ -864,7 +864,7 @@ async function submitRodeRm() {
     statusEl.innerHTML = `<div class="alert alert-error">❌ Request failed: ${esc(err.message)}</div>`;
     outputEl.textContent = '';
   } finally {
-    setLoading('t2_run_btn', 'Run rode_rm', false);
+    setLoading('t2_run_btn', 'Run role_rm', false);
   }
 }
 

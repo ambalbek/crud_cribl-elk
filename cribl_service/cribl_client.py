@@ -313,7 +313,6 @@ class AsyncCriblClient:
         self, worker_group: str, table: str, app_id: str, updates: dict[str, Any]
     ) -> dict[str, Any]:
         """Update fields on an existing route then PATCH the table back."""
-        import copy
         current = await self.list_routes(worker_group, table)
         obj = current
         if isinstance(obj.get("items"), list) and obj["items"]:
@@ -341,7 +340,6 @@ class AsyncCriblClient:
         self, worker_group: str, table: str, app_id: str, dry_run: bool = False
     ) -> dict[str, Any]:
         """Remove a route by id/name, then PATCH the table back."""
-        import copy
         current = await self.list_routes(worker_group, table)
         obj = current
         if isinstance(obj.get("items"), list) and obj["items"]:

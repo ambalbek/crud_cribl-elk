@@ -42,7 +42,7 @@ async def get_ilm_policy(
 @router.put("/policies/{name}", status_code=200)
 async def put_ilm_policy(
     name: str,
-    body: dict = Body(...),
+    body: dict[str, Any] = Body(...),
     target: str = Query(default="nonprod"),
     client: AsyncECEClient = Depends(get_async_ece_client),
 ) -> dict[str, Any]:

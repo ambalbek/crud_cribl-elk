@@ -7,7 +7,7 @@ flowchart TD
     APP["app.py<br><i>Flask Web UI :5000</i><br>Auth, Portal, Pusher UI,<br>Entitlements, Admin"]
 
     APP -- "subprocess.run()" --> PUSHER["cribl-pusher.py<br><i>CLI Script</i><br>Routes + Destinations"]
-    APP -- "subprocess.run()" --> RODE["rode_rm.py<br><i>CLI Script</i><br>ELK Roles + Cribl Routes"]
+    APP -- "subprocess.run()" --> RODE["role_rm.py<br><i>CLI Script</i><br>ELK Roles + Cribl Routes"]
 
     PUSHER -- import --> CONFIG["cribl_config.py<br><i>Library</i><br>Config loading, URL building,<br>credential resolution"]
     PUSHER -- import --> API["cribl_api.py<br><i>Library</i><br>Auth, route normalization,<br>group management"]
@@ -52,7 +52,7 @@ flowchart LR
 
     subgraph CLI["CLI Scripts"]
         PUSHER["cribl-pusher.py<br>Routes + Destinations"]
-        RODE["rode_rm.py<br>ELK Roles + Cribl"]
+        RODE["role_rm.py<br>ELK Roles + Cribl"]
     end
 
     subgraph LIB["Shared Libraries"]
@@ -106,11 +106,11 @@ flowchart TD
 
 ---
 
-## 4. ELK Roles + Cribl Routes (rode_rm.py)
+## 4. ELK Roles + Cribl Routes (role_rm.py)
 
 ```mermaid
 flowchart TD
-    ADMIN([Admin runs rode_rm]) --> PARSE["Parse args<br>Load apps from file or CLI"]
+    ADMIN([Admin runs role_rm]) --> PARSE["Parse args<br>Load apps from file or CLI"]
     PARSE --> TEMPLATES["generate_templates()<br>Render role + role-mapping<br>via Jinja2"]
     TEMPLATES --> SAVE["save_templates()<br>Write to ops_rm_r_templates_output/"]
 
@@ -293,7 +293,7 @@ flowchart TD
     subgraph SCRIPTS["CLI Scripts (subprocess)"]
         direction LR
         CP["cribl-pusher.py"]
-        RM["rode_rm.py"]
+        RM["role_rm.py"]
     end
 
     FRAMEWORK -- "subprocess.run()" --> SCRIPTS

@@ -3,7 +3,7 @@ Settings for ece_service.
 All values read from environment variables — no config.json at request time.
 
 Two ES targets are supported (nonprod + prod) for the /provision endpoint
-that mirrors rode_rm.py's dual-cluster push behaviour.
+that mirrors role_rm.py's dual-cluster push behaviour.
 """
 import os
 

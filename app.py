@@ -518,7 +518,7 @@ def build_pusher_cmd(form: dict, appfile_path: str) -> tuple:
     return cmd, mask_cmd(cmd, sensitive)
 
 
-def build_rode_rm_cmd(form: dict, appfile_path: str) -> tuple:
+def build_role_rm_cmd(form: dict, appfile_path: str) -> tuple:
     cmd = [sys.executable, str(ROLE_RM), "--yes", "--config", str(CONFIG_PATH)]
 
     if form.get("mode") == "bulk":
@@ -913,6 +913,11 @@ def api_entitlements():
 #  ROUTES — Cribl Pusher (automation UI)
 # ══════════════════════════════════════════════════════════════════════════════
 
+@app.route("/")
+def root_redirect():
+    return redirect("/cribl/")
+
+
 @app.route("/cribl")
 @app.route("/cribl/")
 @admin_required
@@ -1100,9 +1105,9 @@ def run_pusher():
     })
 
 
-@app.route("/cribl/api/run-rode-rm", methods=["POST"])
+@app.route("/cribl/api/run-role-rm", methods=["POST"])
 @admin_required
-def run_rode_rm():
+def run_role_rm():
     form       = request.form
     file       = request.files.get("appfile")
     mode       = form.get("mode", "single")
@@ -1149,10 +1154,10 @@ def run_rode_rm():
         )
 
     if errors:
-        log.warning("run-rode-rm validation failed: %s", errors)
+        log.warning("run-role-rm validation failed: %s", errors)
         return jsonify({"errors": errors}), 400
 
-    log.info("run-rode-rm  workspace=%s  wg=%s  mode=%s  skip_elk=%s  skip_cribl=%s  dry_run=%s",
+    log.info("run-role-rm  workspace=%s  wg=%s  mode=%s  skip_elk=%s  skip_cribl=%s  dry_run=%s",
              form.get("workspace"), form.get("worker_group"), mode,
              skip_elk, skip_cribl, bool(form.get("dry_run")))
 
@@ -1175,7 +1180,7 @@ def run_rode_rm():
                 except OSError:
                     pass
     else:
-        bulk_apps = [(form.get("app_name", "").strip(), form.get("apmid", "").strip())]
+        bulk_apps = [(form.get("apmid", "").strip(), form.get("app_name", "").strip())]
 
     # ── HTTP path: delegate to microservices ───────────────────────────────
     if ECE_SERVICE_URL and not skip_elk:
@@ -1183,7 +1188,7 @@ def run_rode_rm():
         last_rc    = 0
         svc_results = []
 
-        for app_name, apmid in bulk_apps:
+        for apmid, app_name in bulk_apps:
             params = {
                 "app_name": app_name,
                 "apmid":    apmid,
@@ -1221,7 +1226,7 @@ def run_rode_rm():
             except Exception as exc:
                 return jsonify({"errors": [f"Cribl config error: {exc}"]}), 500
 
-            apps_payload = [{"apmid": apmid, "app_name": app_name} for app_name, apmid in bulk_apps]
+            apps_payload = [{"apmid": apmid, "app_name": app_name} for apmid, app_name in bulk_apps]
             cribl_payload = {
                 "apps": apps_payload, "route_template": route_tmpl,
                 "dest_template": dest_tmpl, "dest_prefix": dest_prefix,
@@ -1240,7 +1245,7 @@ def run_rode_rm():
             # Cribl subprocess fallback when CRIBL_SERVICE_URL not set
             tmp_path = None
             try:
-                cmd, masked = build_rode_rm_cmd(form.to_dict(), "")
+                cmd, masked = build_role_rm_cmd(form.to_dict(), "")
                 cribl_output, crc = run_subprocess(cmd, masked)
                 if crc != 0:
                     last_rc = crc
@@ -1270,7 +1275,7 @@ def run_rode_rm():
                 file.save(tmp)
                 tmp_path = tmp.name
 
-        cmd, masked = build_rode_rm_cmd(form.to_dict(), tmp_path or "")
+        cmd, masked = build_role_rm_cmd(form.to_dict(), tmp_path or "")
         output, rc  = run_subprocess(cmd, masked)
 
     finally:

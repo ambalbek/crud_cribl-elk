@@ -13,7 +13,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "0.0.0.0:5000:5000"     # bind on all interfaces — lock down with firewall to bastion IP only
+      - "127.0.0.1:5000:5000"   # localhost only — use a reverse proxy for external access
     volumes:
       - ./config.json:/app/config.json:ro          # secrets never in image
       - ./cribl_snapshots:/app/cribl_snapshots     # persist snapshots across restarts
@@ -44,7 +44,7 @@ services:
     ports:
       - "127.0.0.1:8001:8001"                # internal only; cribl-framework reaches it via service name
     env_file:
-      - cribl_service/.env.example            # override with a real .env in production
+      - cribl_service/.env
     environment:
       - LOG_LEVEL=INFO
       - LOG_FORMAT=${LOG_FORMAT:-text}
@@ -77,7 +77,7 @@ services:
     volumes:
       - ./ops_rm_r_templates_output:/app/ops_rm_r_templates_output  # ELK template output
     env_file:
-      - ece_service/.env.example              # override with a real .env in production
+      - ece_service/.env
     environment:
       - LOG_LEVEL=INFO
       - LOG_FORMAT=${LOG_FORMAT:-text}
