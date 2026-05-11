@@ -1,0 +1,114 @@
+services:
+  # ── Application Services Only (no ELK / no OTel) ───────────────────────────
+
+  cribl-edge:
+    image: cribl/cribl:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      - CRIBL_BOOT_START_MODE=managed-edge
+    ports:
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
+      - "0.0.0.0:9420:9420"     # Cribl Edge UI
+    volumes:
+      - cribl_edge_data:/opt/cribl/state
+
+  cribl-framework:
+    image: cribl-framework:1.0.0
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:5000:5000"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./cribl_snapshots:/app/cribl_snapshots
+    environment:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://cribl-edge:4318}
+      - CRIBL_SERVICE_URL=http://cribl_service:8001
+      - ECE_SERVICE_URL=http://ece_service:8002
+    depends_on:
+      cribl_service:
+        condition: service_healthy
+      ece_service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5000/cribl/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  cribl_service:
+    image: cribl-service:1.0.0
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8001"
+    env_file:
+      - cribl_service/.env
+    environment:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://cribl-edge:4318}
+      - CRIBL_BASE_URL=${CRIBL_BASE_URL:-}
+      - CRIBL_TOKEN=${CRIBL_TOKEN:-}
+      - CRIBL_USERNAME=${CRIBL_USERNAME:-}
+      - CRIBL_PASSWORD=${CRIBL_PASSWORD:-}
+      - CRIBL_SKIP_SSL=${CRIBL_SKIP_SSL:-false}
+      - CRIBL_TIMEOUT=${CRIBL_TIMEOUT:-30}
+      - CRIBL_DEFAULT_WORKSPACE=${CRIBL_DEFAULT_WORKSPACE:-default}
+      - CRIBL_DEFAULT_ROUTES_TABLE=${CRIBL_DEFAULT_ROUTES_TABLE:-default}
+      - CRIBL_MIN_EXISTING_ROUTES=${CRIBL_MIN_EXISTING_ROUTES:-1}
+      - CRIBL_SNAPSHOT_DIR=${CRIBL_SNAPSHOT_DIR:-cribl_snapshots}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  ece_service:
+    image: ece-service:1.0.0
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8002:8002"
+    volumes:
+      - ./ops_rm_r_templates_output:/app/ops_rm_r_templates_output
+    env_file:
+      - ece_service/.env
+    environment:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://cribl-edge:4318}
+      # Elasticsearch — nonprod
+      - ECE_ES_URL=${ECE_ES_URL:-}
+      - ECE_ES_TOKEN=${ECE_ES_TOKEN:-}
+      - ECE_ES_USERNAME=${ECE_ES_USERNAME:-}
+      - ECE_ES_PASSWORD=${ECE_ES_PASSWORD:-}
+      # Elasticsearch — prod
+      - ECE_ES_URL_PROD=${ECE_ES_URL_PROD:-}
+      - ECE_ES_TOKEN_PROD=${ECE_ES_TOKEN_PROD:-}
+      - ECE_ES_USERNAME_PROD=${ECE_ES_USERNAME_PROD:-}
+      - ECE_ES_PASSWORD_PROD=${ECE_ES_PASSWORD_PROD:-}
+      # Kibana
+      - ECE_KIBANA_URL=${ECE_KIBANA_URL:-}
+      - ECE_KIBANA_TOKEN=${ECE_KIBANA_TOKEN:-}
+      - ECE_KIBANA_USERNAME=${ECE_KIBANA_USERNAME:-}
+      - ECE_KIBANA_PASSWORD=${ECE_KIBANA_PASSWORD:-}
+      - ECE_SKIP_SSL=${ECE_SKIP_SSL:-false}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  cribl_edge_data:

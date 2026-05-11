@@ -40,3 +40,6 @@ cribl_snapshots/
 ops_rm_r_templates_output/
 *.pptx
 generate_pptx.py
+
+elasticsearch.yml
+logstash/
