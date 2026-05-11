@@ -11,7 +11,10 @@ C4Context
     Person(client, "Application Team", "Requests log routing<br>onboarding via the portal")
     Person(platform, "Platform / Ops Team", "Provisions routes, destinations,<br>and ELK roles")
 
-    System(criblfw, "Cribl Framework", "Web portal + automation tools<br>for onboarding application logs<br>into Cribl Stream and ELK")
+    System(criblfw, "Cribl Framework", "Web portal + automation tools<br>for onboarding application logs<br>into Cribl Stream, Cribl Edge, and ELK")
+
+    System(elk_local, "Local ELK Stack", "Elasticsearch + Logstash + Kibana<br>Stores observability data<br>(traces, metrics, logs)")
+    System(cribl_edge, "Cribl Edge", "OTLP telemetry collector<br>Receives traces/metrics/logs<br>Routes to Logstash/ES")
 
     System_Ext(cribl, "Cribl Stream", "Log routing and processing<br>platform (worker groups)")
     System_Ext(elk_data, "Elasticsearch — Datastream", "Stores onboarding requests<br>and tracks their status")
@@ -26,6 +29,9 @@ C4Context
     Rel(criblfw, elk_data, "Indexes and updates<br>onboarding requests", "REST API / HTTPS")
     Rel(criblfw, elk_ent, "Reads role mappings<br>for entitlement lookup", "REST API / HTTPS")
     Rel(criblfw, elk_ent, "Creates roles and<br>role-mappings for apps", "REST API / HTTPS")
+    Rel(criblfw, cribl_edge, "Sends OTLP telemetry", "gRPC :4317 / HTTP :4318")
+    Rel(criblfw, elk_local, "Checks ELK health", "REST / HTTP")
+    Rel(cribl_edge, elk_local, "Routes telemetry to<br>Logstash → ES data streams", "HTTP")
     Rel(cribl, azure, "Routes logs to", "HTTPS / Azure SDK")
     Rel(elk_ent, ad, "References entitlement group DNs", "LDAP / embedded")
 ```
@@ -46,11 +52,18 @@ C4Container
     System_Boundary(criblfw, "Cribl Framework") {
         Container(apache, "Apache httpd", "Reverse Proxy", "Terminates TLS, enforces<br>security headers, proxies to Flask")
         Container(flask, "cribl-framework", "Python 3.13 / Flask 3.1 · port 5000", "Portal UI, Pusher UI,<br>Entitlements, RBAC")
-        Container(cribl_svc, "cribl-service", "Python 3.13 / FastAPI · port 8000", "REST API wrapping Cribl Stream:<br>routes, destinations, pipelines,<br>worker groups, leaders")
-        Container(ece_svc, "ece-service", "Python 3.13 / FastAPI · port 8001", "REST API wrapping ECE/ELK:<br>roles, role-mappings, indexes,<br>Logstash pipelines, Kibana dashboards")
+        Container(cribl_svc, "cribl-service", "Python 3.13 / FastAPI · port 8001", "REST API wrapping Cribl Stream:<br>routes, destinations, pipelines,<br>worker groups, leaders")
+        Container(ece_svc, "ece-service", "Python 3.13 / FastAPI · port 8002", "REST API wrapping ECE/ELK:<br>roles, role-mappings, indexes,<br>Logstash pipelines, Kibana dashboards")
         Container(role_rm, "role_rm.py", "Python CLI (subprocess)", "Provisions ELK roles and<br>role-mappings")
         ContainerDb(snapshots, "cribl_snapshots/", "JSON files on disk", "Route table snapshots<br>for rollback")
         ContainerDb(templates_out, "ops_rm_r_templates_output/", "JSON files on disk", "Generated ELK role/<br>role-mapping files")
+    }
+
+    System_Boundary(observability, "Observability Stack") {
+        Container(edge, "Cribl Edge", "Cribl Edge · ports 4317/4318/9420", "OTLP telemetry collector<br>Receives traces/metrics/logs<br>Pipeline processing, routing,<br>data reduction")
+        Container(logstash, "Logstash", "Logstash 8.17.0 · ports 5044/5045/5046", "HTTP inputs per signal type<br>Writes to ES data streams")
+        Container(es_local, "Elasticsearch", "Elasticsearch 8.17.0 · port 9200", "Single-node local dev<br>Data streams: traces/metrics/logs<br>otel-default namespace")
+        Container(kibana, "Kibana", "Kibana 8.17.0 · port 5601", "Dashboards, Dev Console,<br>index management,<br>data views for otel-*")
     }
 
     System_Ext(cribl, "Cribl Stream", "REST API")
@@ -61,8 +74,8 @@ C4Container
     Rel(client, apache, "Submits onboarding request", "HTTPS")
     Rel(platform, apache, "Manages provisioning", "HTTPS")
     Rel(apache, flask, "Proxies requests", "HTTP")
-    Rel(flask, cribl_svc, "Route/destination/pipeline<br>provisioning", "REST HTTP :8000")
-    Rel(flask, ece_svc, "Role / index / pipeline<br>management", "REST HTTP :8001")
+    Rel(flask, cribl_svc, "Route/destination/pipeline<br>provisioning", "REST HTTP :8001")
+    Rel(flask, ece_svc, "Role / index / pipeline<br>management", "REST HTTP :8002")
     Rel(flask, role_rm, "Spawns subprocess", "CLI args / stdout")
     Rel(cribl_svc, cribl, "GET/PATCH routes,<br>POST destinations,<br>CRUD pipelines", "REST / HTTPS")
     Rel(cribl_svc, snapshots, "Writes route snapshots")
@@ -71,6 +84,14 @@ C4Container
     Rel(flask, elk_data, "Index and update<br>onboarding requests", "REST / HTTPS")
     Rel(flask, elk_ent, "Read role mappings<br>for entitlement UI", "REST / HTTPS")
     Rel(cribl, azure, "Streams logs to", "HTTPS")
+
+    Rel(flask, edge, "OTLP telemetry", "HTTP :4318")
+    Rel(cribl_svc, edge, "OTLP telemetry", "HTTP :4318")
+    Rel(ece_svc, edge, "OTLP telemetry", "HTTP :4318")
+    Rel(edge, logstash, "Routes traces/metrics/logs", "HTTP JSON :5044/5045/5046")
+    Rel(logstash, es_local, "Writes data streams", "REST HTTP :9200")
+    Rel(es_local, kibana, "Serves data", "REST HTTP :9200")
+    Rel(flask, es_local, "/health/elk checks", "REST HTTP :9200")
 ```
 
 ---
@@ -92,12 +113,13 @@ C4Component
         Component(admin_ui, "Admin Status UI", "Flask route: /portal/admin/update-status", "Marks onboarding requests<br>as done in Elasticsearch")
         Component(cribl_ui, "Cribl Pusher UI", "Flask routes: /cribl, /cribl/api/*", "Web interface to run<br>cribl-pusher.py and role_rm.py subprocesses")
         Component(ent_ui, "Entitlement Lookup UI", "Flask routes: /entitlements, /api/entitlements", "Fetches and displays ELK<br>role-mapping data across clusters")
-        Component(health, "Health Endpoints", "Flask routes: /health, /health/es", "Liveness and Elasticsearch<br>connectivity checks")
+        Component(health, "Health Endpoints", "Flask routes: /health, /health/es, /health/elk", "Liveness, remote ECE ES check,<br>and local ELK stack health<br>(ES + Logstash + Kibana + OTel indices)")
         Component(es_client, "Elasticsearch Client", "requests + config.json", "Index documents, update by query,<br>fetch role mappings")
     }
 
     System_Ext(elk_data, "Elasticsearch — Datastream")
     System_Ext(elk_ent, "Elasticsearch — Entitlements")
+    System(elk_local, "Local ELK Stack", "ES :9200 + Logstash + Kibana :5601")
     ContainerDb(config, "config.json", "Runtime config", "Credentials, workspace<br>definitions, cluster URLs")
 
     Rel(client, auth, "Logs in", "HTTPS POST /login")
@@ -114,6 +136,7 @@ C4Component
     Rel(cribl_ui, config, "Reads workspace config")
     Rel(es_client, elk_data, "POST / _update_by_query", "REST / HTTPS")
     Rel(es_client, elk_ent, "GET _security/role_mapping", "REST / HTTPS")
+    Rel(health, elk_local, "GET _cluster/health,<br>Logstash API, Kibana status,<br>_cat/indices/otel-*", "REST / HTTP")
 ```
 
 ---
@@ -144,7 +167,7 @@ C4Component
 
     System_Ext(cribl, "Cribl Stream", "REST API")
 
-    Rel(flask_app, main, "HTTP requests", "REST / HTTP :8000")
+    Rel(flask_app, main, "HTTP requests", "REST / HTTP :8001")
     Rel(main, r_routes, "Includes router")
     Rel(main, r_dest, "Includes router")
     Rel(main, r_pipe, "Includes router")
@@ -191,7 +214,7 @@ C4Component
     System_Ext(elk_p, "Elasticsearch — Prod", "REST API")
     System_Ext(kibana, "Kibana", "Saved Objects API")
 
-    Rel(flask_app, main2, "HTTP requests", "REST / HTTP :8001")
+    Rel(flask_app, main2, "HTTP requests", "REST / HTTP :8002")
     Rel(main2, r_roles, "Includes router")
     Rel(main2, r_rm, "Includes router")
     Rel(main2, r_idx, "Includes router")
@@ -216,8 +239,8 @@ C4Component
 
 | Level | Diagram | Audience |
 |-------|---------|----------|
-| 1 — System Context | Who uses it, what it integrates with | Everyone — management, clients, ops |
-| 2 — Container | Deployable units and their communication | Architects, DevOps |
-| 3 — Component (Flask) | Internal structure of cribl-framework | Developers |
+| 1 — System Context | Who uses it, what it integrates with (incl. Cribl Edge + local ELK) | Everyone — management, clients, ops |
+| 2 — Container | All deployable units: app services + observability stack (Cribl Edge, Logstash, ES, Kibana) | Architects, DevOps |
+| 3 — Component (Flask) | Internal structure of cribl-framework (incl. /health/elk) | Developers |
 | 3 — Component (cribl-service) | Internal structure of cribl-service | Developers |
 | 3 — Component (ece-service) | Internal structure of ece-service | Developers |

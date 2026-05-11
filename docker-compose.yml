@@ -1,4 +1,50 @@
 services:
+  # ── ELK Stack ───────────────────────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    restart: unless-stopped
+    environment:
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+      - ./elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.0
+    restart: unless-stopped
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "127.0.0.1:5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.17.0
+    restart: unless-stopped
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    environment:
+      - LS_JAVA_OPTS=-Xms256m -Xmx256m
+      - XPACK_MONITORING_ENABLED=false
+    ports:
+      - "127.0.0.1:5044:5044"   # traces
+      - "127.0.0.1:5045:5045"   # metrics
+      - "127.0.0.1:5046:5046"   # logs
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ── Observability ───────────────────────────────────────────────────────────
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     restart: unless-stopped
@@ -8,6 +54,9 @@ services:
       - "127.0.0.1:4317:4317"   # OTLP gRPC (internal only)
       - "127.0.0.1:4318:4318"   # OTLP HTTP (internal only)
       - "127.0.0.1:8888:8888"   # Collector metrics
+    depends_on:
+      logstash:
+        condition: service_started
 
   cribl-framework:
     build: .
@@ -105,3 +154,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+
+volumes:
+  es_data:

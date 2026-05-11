@@ -9,7 +9,7 @@ Routers:
   /api/v1/kibana/dashboards/*      — Kibana saved-objects dashboards
 
 Run:
-    uvicorn ece_service.main:app --host 0.0.0.0 --port 8001
+    uvicorn ece_service.main:app --host 0.0.0.0 --port 8002
 """
 import logging
 import os

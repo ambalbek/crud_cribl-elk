@@ -22,6 +22,7 @@ COPY cribl_api.py    ./cribl_api.py
 COPY cribl_config.py ./cribl_config.py
 COPY cribl_logger.py ./cribl_logger.py
 COPY cribl_utils.py  ./cribl_utils.py
+COPY otel_setup.py   ./otel_setup.py
 
 # ── Service application code ─────────────────────────────────────────────────
 COPY cribl_service/ ./cribl_service/

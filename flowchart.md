@@ -2,7 +2,7 @@
 
 ## Service Architecture
 
-> How the three containers relate at runtime.
+> How all containers relate at runtime — application services, ELK stack, and Cribl Edge.
 
 ```mermaid
 flowchart LR
@@ -11,9 +11,21 @@ flowchart LR
     end
 
     subgraph COMPOSE["Docker Compose network"]
-        FLASK["cribl-framework\nFlask :5000\nPortal · Pusher UI · Catalog\nEntitlements · RBAC"]
-        CS["cribl_service\nFastAPI :8001\nRoutes · Destinations · Pipelines\nWorker Groups · Leaders\nStream CRUD · Edge Fleets\nWorkgroups (async httpx)"]
-        ES_SVC["ece_service\nFastAPI :8002\nES Roles · Role-Mappings\nIndexes · ILM Policies\nLogstash Pipelines\nKibana Dashboards\n(sync + async)"]
+        subgraph APP_SVCS["Application Services"]
+            FLASK["cribl-framework\nFlask :5000\nPortal · Pusher UI · Catalog\nEntitlements · RBAC"]
+            CS["cribl_service\nFastAPI :8001\nRoutes · Destinations · Pipelines\nWorker Groups · Leaders\nStream CRUD · Edge Fleets\nWorkgroups (async httpx)"]
+            ES_SVC["ece_service\nFastAPI :8002\nES Roles · Role-Mappings\nIndexes · ILM Policies\nLogstash Pipelines\nKibana Dashboards\n(sync + async)"]
+        end
+
+        subgraph TELEMETRY["Observability Pipeline"]
+            EDGE["Cribl Edge\n:4317 gRPC · :4318 HTTP\n:9420 UI\nOTLP receiver · pipelines\nrouting · data reduction"]
+            LS["Logstash :5044/:5045/:5046\nHTTP inputs → ES data streams\ntraces · metrics · logs"]
+        end
+
+        subgraph ELK["ELK Stack"]
+            ES_LOCAL["Elasticsearch :9200\nSingle-node · local dev\nData streams: traces/metrics/logs"]
+            KIBANA["Kibana :5601\nDashboards · Dev Console\nIndex management"]
+        end
     end
 
     CRIBL[("Cribl Stream\n(external)")]
@@ -28,6 +40,76 @@ flowchart LR
     FLASK -->|"ES REST API"| ELK_D
     FLASK -->|"ES REST API"| ELK_ENT
     CRIBL -->|"streams logs to"| AZURE
+
+    FLASK -.->|"OTLP :4318"| EDGE
+    CS -.->|"OTLP :4318"| EDGE
+    ES_SVC -.->|"OTLP :4318"| EDGE
+    EDGE -->|"HTTP JSON"| LS
+    LS -->|"data streams"| ES_LOCAL
+    ES_LOCAL --> KIBANA
+    FLASK -->|"/health/elk"| ES_LOCAL
+    FLASK -->|"/health/elk"| LS
+    FLASK -->|"/health/elk"| KIBANA
+```
+
+---
+
+## Observability Pipeline
+
+> How OpenTelemetry traces, metrics, and logs flow from application services through Cribl Edge into the ELK stack.
+
+```mermaid
+flowchart TD
+    subgraph SERVICES["Application Services (OTLP instrumented)"]
+        S1["cribl-framework\n(Flask + opentelemetry-instrumentation-flask)"]
+        S2["cribl_service\n(FastAPI + opentelemetry-instrumentation-fastapi)"]
+        S3["ece_service\n(FastAPI + opentelemetry-instrumentation-fastapi)"]
+    end
+
+    subgraph OTEL_SETUP["otel_setup.py (shared bootstrap)"]
+        direction LR
+        TP["TracerProvider\n+ BatchSpanProcessor"]
+        REQ_INST["requests auto-instrumentation"]
+        HTTPX_INST["httpx auto-instrumentation"]
+    end
+
+    S1 & S2 & S3 --> TP
+    TP -->|"OTLP HTTP :4318\nor gRPC :4317"| EDGE
+
+    subgraph EDGE["Cribl Edge (:9420 UI)"]
+        direction TB
+        SRC["OTLP Source\n:4317 gRPC\n:4318 HTTP"]
+        PIPE["Pipelines\n(optional: sampling,\nfield masking,\nenrichment, reduction)"]
+        ROUTE["Routes\ntraces → port 5044\nmetrics → port 5045\nlogs → port 5046"]
+        SRC --> PIPE --> ROUTE
+    end
+
+    subgraph LOGSTASH["Logstash"]
+        direction TB
+        IN_T["HTTP Input :5044\ncodec: json\ntype: traces"]
+        IN_M["HTTP Input :5045\ncodec: json\ntype: metrics"]
+        IN_L["HTTP Input :5046\ncodec: json\ntype: logs"]
+        FILTER["Filter\nremove: headers, host,\nurl, user_agent, http"]
+    end
+
+    ROUTE --> IN_T & IN_M & IN_L
+    IN_T & IN_M & IN_L --> FILTER
+
+    subgraph ES["Elasticsearch :9200"]
+        DS_T["traces-otel-default\n(data stream)"]
+        DS_M["metrics-otel-default\n(data stream)"]
+        DS_L["logs-otel-default\n(data stream)"]
+    end
+
+    FILTER -->|"data_stream_type: traces"| DS_T
+    FILTER -->|"data_stream_type: metrics"| DS_M
+    FILTER -->|"data_stream_type: logs"| DS_L
+
+    DS_T & DS_M & DS_L --> KIB["Kibana :5601\nData views: traces-otel-*\nmetrics-otel-* · logs-otel-*"]
+
+    HEALTH["/cribl/health/elk"] -.->|"checks"| ES
+    HEALTH -.->|"checks"| LOGSTASH
+    HEALTH -.->|"checks"| KIB
 ```
 
 ---

@@ -37,6 +37,23 @@ exporters:
   #   tls:
   #     insecure: true
 
+  # ── Logstash via OTLP HTTP (one port per signal) ────────────────────────────
+  otlphttp/logstash-traces:
+    endpoint: "http://logstash:5044"
+    encoding: json
+    tls:
+      insecure: true
+  otlphttp/logstash-metrics:
+    endpoint: "http://logstash:5045"
+    encoding: json
+    tls:
+      insecure: true
+  otlphttp/logstash-logs:
+    endpoint: "http://logstash:5046"
+    encoding: json
+    tls:
+      insecure: true
+
   # ── Uncomment to forward to Elastic APM ───────────────────────────────────
   # otlp/elastic:
   #   endpoint: "${env:ELASTIC_APM_SERVER_URL}/intake/v2/events"
@@ -54,12 +71,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [debug]
+      exporters: [debug, otlphttp/logstash-traces]
     metrics:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [debug]
+      exporters: [debug, otlphttp/logstash-metrics]
     logs:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [debug]
+      exporters: [debug, otlphttp/logstash-logs]

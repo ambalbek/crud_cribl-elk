@@ -1,6 +1,8 @@
 # Cribl Framework
 
-Unified platform for application onboarding into **Cribl Stream** and **ELK**. The system is composed of **three containerised services**:
+Unified platform for application onboarding into **Cribl Stream**, **Cribl Edge**, and **ELK** (Elasticsearch, Logstash, Kibana). The system is composed of **three application services** plus a local **ELK stack** with **Cribl Edge** for telemetry collection:
+
+### Application Services
 
 | Service | Stack | Port | Role |
 |---|---|---|---|
@@ -8,7 +10,28 @@ Unified platform for application onboarding into **Cribl Stream** and **ELK**. T
 | `cribl_service` | FastAPI + uvicorn | 8001 | Cribl Stream API — routes, destinations, pipelines, worker groups, leaders, edge fleets |
 | `ece_service` | FastAPI + uvicorn | 8002 | ECE/ELK API — ES roles, role-mappings, indexes, ILM policies, Logstash pipelines, Kibana dashboards |
 
-`cribl-framework` is the **consumer** of `cribl-service`. It calls the service's REST API instead of invoking CLI subprocesses directly.
+### Infrastructure Services
+
+| Service | Stack | Port(s) | Role |
+|---|---|---|---|
+| `elasticsearch` | Elasticsearch 8.17.0 | 9200 | Search and analytics engine — stores onboarding data, traces, metrics, and logs |
+| `logstash` | Logstash 8.17.0 | 5044, 5045, 5046 | Ingestion pipeline — receives OTLP data and writes to ES data streams |
+| `kibana` | Kibana 8.17.0 | 5601 | Visualization — dashboards, Dev Console, index management |
+| `cribl-edge` | Cribl Edge | 4317, 4318, 9420 | Telemetry collector — receives OTLP from all services, routes to Logstash/ES |
+
+### Data Flow
+
+```
+App Services (OTLP) → Cribl Edge → Logstash → Elasticsearch → Kibana
+                         ↓
+                    (optional: route directly to ES, Splunk, S3, etc.)
+```
+
+**Cribl Edge** replaces the vanilla OpenTelemetry Collector, providing visual pipeline management, data reduction, and flexible routing — all managed through the Cribl Edge UI (`:9420`) or programmatically via the `cribl_service` API.
+
+**Cribl Stream** handles log routing at the infrastructure level (worker groups, routes, destinations, pipelines) and is managed through the `cribl_service` API.
+
+`cribl-framework` is the **consumer** of `cribl_service`. It calls the service's REST API instead of invoking CLI subprocesses directly.
 
 ---
 
@@ -31,7 +54,7 @@ Unified platform for application onboarding into **Cribl Stream** and **ELK**. T
 15. [Docker](#docker)
 16. [Serving via Apache httpd (bastion)](#serving-via-apache-httpd-bastion)
 17. [All CLI Flags](#all-cli-flags)
-18. [Observability (OpenTelemetry)](#observability-opentelemetry)
+18. [Observability — Cribl Edge + ELK](#observability--cribl-edge--elk)
 19. [Logging](#logging)
 20. [Safety Features](#safety-features)
 21. [Rolling Back a Change](#rolling-back-a-change)
@@ -106,7 +129,7 @@ The framework uses **local account authentication** with role-based access contr
 | Page | User Role | Admin Role |
 |------|-----------|------------|
 | `/cribl/login`, `/cribl/logout` | Public | Public |
-| `/cribl/health`, `/cribl/health/es` | Public | Public |
+| `/cribl/health`, `/cribl/health/es`, `/cribl/health/elk` | Public | Public |
 | `/cribl/` (landing page) | Redirects to `/cribl/portal` | Full dashboard |
 | `/cribl/portal` (onboarding form) | Yes | Yes |
 | `/cribl/entitlements` (lookup) | Yes | Yes |
@@ -200,9 +223,14 @@ cribl-framework-ent/
 ├── otel_setup.py                   # Shared — OpenTelemetry bootstrap (tracing, JSON logging)
 │
 ├── Dockerfile                      # cribl-framework image (python:3.13-slim, port 5000)
-├── docker-compose.yml              # Three services: cribl-framework :5000, cribl_service :8001, ece_service :8002
-├── otel-collector-config.yml       # OTel Collector config (OTLP receivers, exporters for Jaeger/Elastic/Tempo)
+├── docker-compose.yml              # All services: app trio + ELK stack + Cribl Edge
+├── elasticsearch.yml               # ES config — single-node, security disabled (local dev)
+├── otel-collector-config.yml       # OTel Collector config (kept as fallback — Cribl Edge replaces this)
 ├── requirements.txt                # Flask service dependencies
+│
+├── logstash/
+│   └── pipeline/
+│       └── logstash.conf           # Logstash pipeline — HTTP inputs (5044/5045/5046) → ES data streams
 │
 ├── config.json                     # YOUR config (credentials + workspaces) — never commit
 ├── config.example.json             # Safe-to-commit template
@@ -654,7 +682,8 @@ Opens `http://localhost:5000`. All features are available:
 | `/cribl/api/catalog/{apm_id}` | `DELETE` — offboard an app (admin only, supports `?dry_run=true`) |
 | `/cribl/run` | `POST` — re-onboard trigger from the catalog (admin only) |
 | `/cribl/health` | Health check |
-| `/cribl/health/es` | Elasticsearch health check |
+| `/cribl/health/es` | Remote ECE Elasticsearch health check |
+| `/cribl/health/elk` | Local ELK stack health (ES + Logstash + Kibana + OTel indices) |
 
 ### CLI — single app
 
@@ -811,15 +840,35 @@ Then start all services:
 docker compose up -d --build
 ```
 
-| Service | URL |
-|---|---|
-| Flask portal | `http://localhost:5000` |
-| Cribl service API | `http://localhost:8001` |
-| Cribl service docs | `http://localhost:8001/docs` |
-| ECE service API | `http://localhost:8002` |
-| ECE service docs | `http://localhost:8002/docs` |
+| Service | URL | Purpose |
+|---|---|---|
+| Flask portal | `http://localhost:5000` | Onboarding UI, Pusher, Catalog |
+| Cribl service API | `http://localhost:8001` | Cribl Stream REST API |
+| Cribl service docs | `http://localhost:8001/docs` | Swagger UI |
+| ECE service API | `http://localhost:8002` | ECE/ELK REST API |
+| ECE service docs | `http://localhost:8002/docs` | Swagger UI |
+| Elasticsearch | `http://localhost:9200` | Search engine, data store |
+| Kibana | `http://localhost:5601` | Dashboards, Dev Console |
+| Cribl Edge | `http://localhost:9420` | Telemetry collector UI |
+| Cribl Edge OTLP (gRPC) | `localhost:4317` | OTLP gRPC receiver |
+| Cribl Edge OTLP (HTTP) | `http://localhost:4318` | OTLP HTTP receiver |
 
-`cribl-framework` waits for both `cribl-service` and `ece-service` to pass their health checks before starting.
+### Startup order
+
+```
+Elasticsearch → Logstash → Cribl Edge → cribl_service + ece_service → cribl-framework
+```
+
+`cribl-framework` waits for both `cribl_service` and `ece_service` to pass their health checks before starting. Logstash and Cribl Edge wait for Elasticsearch to be healthy.
+
+### Health check endpoints
+
+| Endpoint | Service |
+|---|---|
+| `/cribl/health` | cribl-framework liveness |
+| `/cribl/health/es` | Remote ECE Elasticsearch cluster |
+| `/cribl/health/elk` | Local ELK stack (ES + Logstash + Kibana + OTel indices) |
+| `/health` | cribl_service / ece_service liveness |
 
 ### Building images individually
 
@@ -914,26 +963,83 @@ Browser → https://bastion/cribl/app
 
 ---
 
-## Observability (OpenTelemetry)
+## Observability — Cribl Edge + ELK
 
-All three services share `otel_setup.py` for distributed tracing and structured logging.
+All three application services emit **OpenTelemetry** traces, metrics, and logs. **Cribl Edge** collects this telemetry and routes it through **Logstash** into **Elasticsearch**, where it can be visualized in **Kibana**.
+
+### Architecture
+
+```
+┌─────────────────┐    OTLP     ┌─────────────┐   HTTP/JSON   ┌───────────┐    data     ┌───────────────┐
+│  cribl-framework │──────────→ │             │─────────────→ │           │──streams──→ │               │
+│  cribl_service   │──────────→ │ Cribl Edge  │               │ Logstash  │            │ Elasticsearch │
+│  ece_service     │──────────→ │             │               │           │            │               │
+└─────────────────┘  :4317/4318 └─────────────┘  :5044/45/46  └───────────┘            └───────┬───────┘
+                                   :9420 UI                                                    │
+                                                                                        ┌──────┴──────┐
+                                                                                        │   Kibana    │
+                                                                                        │   :5601     │
+                                                                                        └─────────────┘
+```
+
+### Why Cribl Edge over a vanilla OTel Collector
+
+| Feature | OTel Collector | Cribl Edge |
+|---|---|---|
+| OTLP receiver (gRPC + HTTP) | Yes | Yes |
+| Visual pipeline editor | No | Yes (`:9420`) |
+| Data reduction (sampling, field drop, aggregation) | Limited | Built-in |
+| Multi-destination routing | Config file only | UI + API |
+| Unified management with Cribl Stream | No | Yes — same fleet management |
+| PQ (persistent queuing) | No | Yes |
+
+### Cribl Edge ports
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| 4317 | gRPC | OTLP receiver — traces, metrics, logs |
+| 4318 | HTTP | OTLP receiver — traces, metrics, logs |
+| 9420 | HTTP | Cribl Edge management UI and API |
+
+### Cribl Edge configuration
+
+After starting the stack, open `http://localhost:9420` to configure Cribl Edge:
+
+1. **Add an OTLP Source** — listens on `:4317` (gRPC) and `:4318` (HTTP)
+2. **Add destinations:**
+   - **Logstash** — `http://logstash:5044` (traces), `:5045` (metrics), `:5046` (logs)
+   - Or send **directly to Elasticsearch** — `http://elasticsearch:9200`
+3. **Create routes** to direct each signal type to the appropriate destination
+4. **(Optional)** Add pipelines for sampling, field masking, enrichment, or data reduction
+
+### Logstash pipeline
+
+Logstash receives telemetry from Cribl Edge on three HTTP input ports and writes to Elasticsearch data streams:
+
+| Port | Signal | Data Stream |
+|---|---|---|
+| 5044 | Traces | `traces-otel-default` |
+| 5045 | Metrics | `metrics-otel-default` |
+| 5046 | Logs | `logs-otel-default` |
 
 ### Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `OTEL_SERVICE_NAME` | *(auto)* | Override the service name reported to the collector |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `""` | OTLP endpoint, e.g. `http://otel-collector:4318`. If empty, spans are collected but not exported |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `""` | OTLP endpoint, e.g. `http://cribl-edge:4318`. If empty, spans are collected but not exported |
 | `OTEL_TRACES_EXPORTER` | `""` | Set to `console` to print spans to stdout (dev/debug) |
 | `LOG_FORMAT` | `""` | Set to `json` for structured JSON log output with trace_id/span_id fields |
 
-### OTel Collector
+### ELK health check
 
-`otel-collector-config.yml` configures the OpenTelemetry Collector sidecar:
+The `/cribl/health/elk` endpoint checks all local ELK components in a single call:
 
-- **Receivers:** OTLP over gRPC (`:4317`) and HTTP (`:4318`)
-- **Processors:** batch (5s / 512 spans), resource attribute injection
-- **Exporters:** debug (stdout) by default — uncomment blocks for Jaeger, Elastic APM, or Grafana Tempo
+```bash
+curl http://localhost:5000/cribl/health/elk
+```
+
+Returns status for Elasticsearch (cluster health), Logstash (API status), Kibana (overall level), and lists any `otel-*` indices with doc counts.
 
 ### Auto-instrumentation
 
@@ -1053,6 +1159,27 @@ Add the `entitlement` block to your `config.json`:
 2. Check username/password credentials
 3. Ensure the user has permissions to read `/_security/role_mapping`
 4. Set `"skip_ssl": true` globally if using self-signed certificates
+
+### `/cribl/health/elk` returns "unreachable" for Elasticsearch
+
+1. Check that Elasticsearch is running: `docker compose ps elasticsearch`
+2. Verify the health check: `curl http://localhost:9200/_cluster/health`
+3. If the cluster status is `red`, check ES logs: `docker compose logs elasticsearch`
+4. Ensure `elasticsearch.yml` has `xpack.security.enabled: false` for local dev
+
+### No OTel data in Kibana
+
+1. Verify Cribl Edge is receiving data: check the Cribl Edge UI at `http://localhost:9420` → Live Data
+2. Confirm services are sending OTLP: set `OTEL_TRACES_EXPORTER=console` to print spans to stdout
+3. Check Logstash is receiving: `docker compose logs logstash`
+4. Verify ES indices exist: `curl http://localhost:9200/_cat/indices/traces-*,metrics-*,logs-*`
+5. In Kibana, create a data view for `traces-otel-*`, `metrics-otel-*`, or `logs-otel-*`
+
+### Cribl Edge UI not loading at `:9420`
+
+1. Confirm the container is running: `docker compose ps cribl-edge`
+2. Check port mapping: `docker compose port cribl-edge 9420`
+3. Review logs: `docker compose logs cribl-edge`
 
 ### Docker container can't reach Cribl/ELK
 

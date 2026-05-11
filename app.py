@@ -42,6 +42,7 @@ from cribl_config import (
     get_workspace, build_workspace_urls,
 )
 from cribl_utils import read_json, read_apps_from_file
+from opentelemetry import trace
 from otel_setup import configure_otel, make_json_formatter, use_json_logging
 
 configure_otel("cribl-framework")
@@ -843,6 +844,84 @@ def health_es():
     except Exception as exc:
         log.error("ES health check failed: %s", exc)
         return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@app.route("/cribl/health/elk")
+def health_elk():
+    """Check local ELK stack health (Elasticsearch, Logstash, Kibana)."""
+    tracer = trace.get_tracer("cribl-framework")
+    results = {}
+    overall = "ok"
+
+    with tracer.start_as_current_span("elk-health-check") as span:
+        # ── Elasticsearch ─────────────────────────────────────────────
+        es_url = os.environ.get("ELK_ES_URL", "http://elasticsearch:9200")
+        try:
+            with tracer.start_as_current_span("elk-health-elasticsearch"):
+                r = http_client.get(f"{es_url}/_cluster/health", timeout=5)
+                body = r.json()
+                results["elasticsearch"] = {
+                    "status": body.get("status", "unknown"),
+                    "cluster_name": body.get("cluster_name"),
+                    "number_of_nodes": body.get("number_of_nodes"),
+                    "active_shards": body.get("active_shards"),
+                    "http_status": r.status_code,
+                }
+                if body.get("status") == "red":
+                    overall = "degraded"
+        except Exception as exc:
+            results["elasticsearch"] = {"status": "unreachable", "error": str(exc)}
+            overall = "error"
+
+        # ── Logstash ──────────────────────────────────────────────────
+        ls_url = os.environ.get("ELK_LOGSTASH_URL", "http://logstash:9600")
+        try:
+            with tracer.start_as_current_span("elk-health-logstash"):
+                r = http_client.get(f"{ls_url}/", timeout=5)
+                body = r.json()
+                results["logstash"] = {
+                    "status": "ok" if r.status_code == 200 else "degraded",
+                    "version": body.get("version"),
+                    "http_status": r.status_code,
+                }
+        except Exception as exc:
+            results["logstash"] = {"status": "unreachable", "error": str(exc)}
+            if overall != "error":
+                overall = "degraded"
+
+        # ── Kibana ────────────────────────────────────────────────────
+        kb_url = os.environ.get("ELK_KIBANA_URL", "http://kibana:5601")
+        try:
+            with tracer.start_as_current_span("elk-health-kibana"):
+                r = http_client.get(f"{kb_url}/api/status", timeout=5)
+                body = r.json()
+                kb_status = body.get("status", {}).get("overall", {}).get("level", "unknown")
+                results["kibana"] = {
+                    "status": kb_status,
+                    "version": body.get("version", {}).get("number"),
+                    "http_status": r.status_code,
+                }
+        except Exception as exc:
+            results["kibana"] = {"status": "unreachable", "error": str(exc)}
+            if overall != "error":
+                overall = "degraded"
+
+        # ── OTel indices ──────────────────────────────────────────────
+        try:
+            with tracer.start_as_current_span("elk-health-otel-indices"):
+                r = http_client.get(f"{es_url}/_cat/indices/otel-*?format=json", timeout=5)
+                indices = r.json() if r.status_code == 200 else []
+                results["otel_indices"] = [
+                    {"index": idx["index"], "docs_count": idx.get("docs.count"), "store_size": idx.get("store.size")}
+                    for idx in indices
+                ]
+        except Exception as exc:
+            results["otel_indices"] = {"error": str(exc)}
+
+        span.set_attribute("elk.overall_status", overall)
+
+    code = 200 if overall == "ok" else 503
+    return jsonify({"status": overall, "components": results}), code
 
 
 # ══════════════════════════════════════════════════════════════════════════════
