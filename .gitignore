@@ -38,7 +38,7 @@ Thumbs.db
 .claude/*
 cribl_snapshots/
 ops_rm_r_templates_output/
-*.pptx
+#*.pptx
 generate_pptx.py
 
 elasticsearch.yml
