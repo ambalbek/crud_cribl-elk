@@ -1,10 +1,7 @@
 # otel-collector-config.yml — OpenTelemetry Collector configuration
 #
 # Receives traces/metrics/logs from all three services via OTLP,
-# and exports them to a configurable backend.
-#
-# To send to a backend, uncomment the relevant exporter below and
-# add it to the pipeline exporters list.
+# and exports them to Elasticsearch.
 
 receivers:
   otlp:
@@ -19,7 +16,6 @@ processors:
     timeout: 5s
     send_batch_size: 512
 
-  # Add service.environment resource attribute from env var if set
   resource:
     attributes:
       - key: deployment.environment
@@ -27,56 +23,27 @@ processors:
         action: upsert
 
 exporters:
-  # Always log to stdout — useful for development and as a fallback
   debug:
     verbosity: normal
 
-  # ── Uncomment to forward to Jaeger ────────────────────────────────────────
-  # otlp/jaeger:
-  #   endpoint: "jaeger:4317"
-  #   tls:
-  #     insecure: true
-
-  # ── Logstash via OTLP HTTP (one port per signal) ────────────────────────────
-  otlphttp/logstash-traces:
-    endpoint: "http://logstash:5044"
-    encoding: json
-    tls:
-      insecure: true
-  otlphttp/logstash-metrics:
-    endpoint: "http://logstash:5045"
-    encoding: json
-    tls:
-      insecure: true
-  otlphttp/logstash-logs:
-    endpoint: "http://logstash:5046"
-    encoding: json
-    tls:
-      insecure: true
-
-  # ── Uncomment to forward to Elastic APM ───────────────────────────────────
-  # otlp/elastic:
-  #   endpoint: "${env:ELASTIC_APM_SERVER_URL}/intake/v2/events"
-  #   headers:
-  #     Authorization: "Bearer ${env:ELASTIC_APM_SECRET_TOKEN}"
-
-  # ── Uncomment to forward to Grafana / Tempo ───────────────────────────────
-  # otlp/tempo:
-  #   endpoint: "tempo:4317"
-  #   tls:
-  #     insecure: true
+  elasticsearch:
+    endpoints: ["http://elasticsearch:9200"]
+    mapping:
+      mode: ecs
+    sending_queue:
+      enabled: true
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [debug, otlphttp/logstash-traces]
+      exporters: [debug, elasticsearch]
     metrics:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [debug, otlphttp/logstash-metrics]
+      exporters: [debug]
     logs:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [debug, otlphttp/logstash-logs]
+      exporters: [debug, elasticsearch]

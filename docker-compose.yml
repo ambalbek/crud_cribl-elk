@@ -51,9 +51,23 @@ services:
     volumes:
       - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
     ports:
-      - "127.0.0.1:4317:4317"   # OTLP gRPC (internal only)
-      - "127.0.0.1:4318:4318"   # OTLP HTTP (internal only)
-      - "127.0.0.1:8888:8888"   # Collector metrics
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
+    depends_on:
+      logstash:
+        condition: service_started
+
+  cribl-edge:
+    image: cribl/cribl:latest
+    restart: unless-stopped
+    environment:
+      - CRIBL_BOOT_START_MODE=managed-edge
+    ports:
+      - "127.0.0.1:9420:9420"   # Cribl Edge UI
+    volumes:
+      - cribl_edge_data:/opt/cribl/state
+      - ./cribl-edge/local/cribl/inputs.yml:/opt/cribl/local/cribl/inputs.yml
+      - ./cribl-edge/local/cribl/outputs.yml:/opt/cribl/local/cribl/outputs.yml
     depends_on:
       logstash:
         condition: service_started
@@ -157,3 +171,4 @@ services:
 
 volumes:
   es_data:
+  cribl_edge_data:
