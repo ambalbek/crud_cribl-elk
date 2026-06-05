@@ -55,7 +55,7 @@ CAPTURE_READ_TIMEOUT_PAD = 30
 
 # Hardcoded default output ID — the catch-all azure_blob destination.
 # Set to None to use auto-detection from the Cribl config.
-DEFAULT_OUTPUT_ID = "default"
+DEFAULT_OUTPUT_ID = "azure_blob:foo-company-default"
 
 # ---------------------------------------------------------------------------
 # HTTP session
@@ -521,22 +521,26 @@ def run_analysis(client: CriblClient, args: argparse.Namespace) -> None:
         )
         return
 
-    # Extract distinct appIds with counts
-    appid_counts: Counter[str] = Counter()
+    # Extract distinct (apmId, appName, outputId) tuples with counts
+    # Key: (apmId, appName, outputId) -> event count
+    combo_counts: Counter[tuple[str, str, str]] = Counter()
     raw_parse_count = 0
     missing_count = 0
     for ev in events:
         top_val = get_nested(ev, args.appid_field)
-        val = extract_appid(ev, args.appid_field)
-        if val is not None:
-            appid_counts[val] += 1
+        apm_id = extract_appid(ev, args.appid_field)
+        if apm_id is not None:
+            app_name = extract_appid(ev, "appName") or ""
+            output_id = str(ev.get("__outputId", ""))
+            combo_counts[(apm_id, app_name, output_id)] += 1
             if top_val is None:
                 raw_parse_count += 1
         else:
             missing_count += 1
 
-    app_ids = set(appid_counts.keys())
+    app_ids = {apm_id for apm_id, _, _ in combo_counts}
     print(f"  Distinct {args.appid_field} values: {len(app_ids)}")
+    print(f"  Distinct (apmId, appName, output) combos: {len(combo_counts)}")
     if raw_parse_count:
         print(f"  ({raw_parse_count} extracted from _raw JSON)")
     if missing_count:
@@ -563,62 +567,71 @@ def run_analysis(client: CriblClient, args: argparse.Namespace) -> None:
 
     # Step 3 — diff
     print(f"\n[Step 3/3] Matching (mode={args.match_mode!r})")
-    results: dict[str, str] = {}
-    unmatched: list[str] = []
-    for aid in sorted(app_ids):
-        dest = match_appid_to_dest(aid, destinations, args.match_mode)
-        if dest:
-            results[aid] = dest
-        else:
-            results[aid] = "DEFAULT"
-            unmatched.append(aid)
 
-    # Table with event counts
-    appid_width = max((len(a) for a in results), default=10)
-    appid_width = max(appid_width, 5)
+    # Build rows: (apmId, appName, outputId, matched_dest, event_count)
+    rows: list[tuple[str, str, str, str, int]] = []
+    for (apm_id, app_name, output_id), count in sorted(combo_counts.items()):
+        dest = match_appid_to_dest(apm_id, destinations, args.match_mode)
+        matched = dest if dest else "DEFAULT"
+        rows.append((apm_id, app_name, output_id, matched, count))
+
+    unmatched_ids = {r[0] for r in rows if r[3] == "DEFAULT"}
+
+    # Table
+    apm_w = max((len(r[0]) for r in rows), default=5)
+    app_w = max((len(r[1]) for r in rows), default=7)
+    out_w = max((len(r[2]) for r in rows), default=8)
+    apm_w = max(apm_w, 5)
+    app_w = max(app_w, 7)
+    out_w = max(out_w, 8)
     print(
-        f"\n{'appId':<{appid_width}s}   {'Events':>6s}   Matched Destination"
+        f"\n{'apmId':<{apm_w}s}   {'appName':<{app_w}s}   "
+        f"{'outputId':<{out_w}s}   {'Events':>6s}   Matched Destination"
     )
-    print("-" * (appid_width + 50))
-    for aid, dest in results.items():
-        marker = " <<<" if dest == "DEFAULT" else ""
+    print("-" * (apm_w + app_w + out_w + 45))
+    for apm_id, app_name, output_id, matched, count in rows:
+        marker = " <<<" if matched == "DEFAULT" else ""
         print(
-            f"{aid:<{appid_width}s}   {appid_counts[aid]:>6d}   {dest}{marker}"
+            f"{apm_id:<{apm_w}s}   {app_name:<{app_w}s}   "
+            f"{output_id:<{out_w}s}   {count:>6d}   {matched}{marker}"
         )
 
-    print(f"\nTotal distinct appIds : {len(app_ids)}")
-    print(f"Matched               : {len(app_ids) - len(unmatched)}")
-    print(f"Unmatched (DEFAULT)   : {len(unmatched)}")
+    print(f"\nTotal distinct apmIds : {len(app_ids)}")
+    print(f"Unmatched (DEFAULT)   : {len(unmatched_ids)}")
     print(f"Total events captured : {len(events)}")
 
-    # CSV
+    # CSV — all rows, not just unmatched
     write_mode = "a" if args.append else "w"
     file_exists = args.append and os.path.isfile(args.output)
+    csv_header = ["apmId", "appName", "outputId", "matched_destination", "event_count"]
 
     if args.append and file_exists:
-        # Read existing appIds to deduplicate
-        existing: set[str] = set()
+        existing: set[tuple[str, str, str]] = set()
         with open(args.output, newline="") as fh:
             reader = csv.DictReader(fh)
             for row in reader:
-                existing.add(row.get("appId", ""))
-        new_unmatched = [a for a in unmatched if a not in existing]
+                existing.add((
+                    row.get("apmId", ""),
+                    row.get("appName", ""),
+                    row.get("outputId", ""),
+                ))
+        new_rows = [r for r in rows if (r[0], r[1], r[2]) not in existing]
         with open(args.output, "a", newline="") as fh:
             writer = csv.writer(fh)
-            for aid in new_unmatched:
-                writer.writerow([aid, appid_counts[aid]])
+            for apm_id, app_name, output_id, matched, count in new_rows:
+                writer.writerow([apm_id, app_name, output_id, matched, count])
         print(
-            f"\nAppended {len(new_unmatched)} new appId(s) to {args.output}"
-            f" ({len(unmatched) - len(new_unmatched)} already present)"
+            f"\nAppended {len(new_rows)} new row(s) to {args.output}"
+            f" ({len(rows) - len(new_rows)} already present)"
         )
     else:
         with open(args.output, write_mode, newline="") as fh:
             writer = csv.writer(fh)
             if write_mode == "w" or not file_exists:
-                writer.writerow(["appId", "event_count"])
-            for aid in unmatched:
-                writer.writerow([aid, appid_counts[aid]])
-        print(f"\nUnmatched appIds written to {args.output}")
+                writer.writerow(csv_header)
+            for apm_id, app_name, output_id, matched, count in rows:
+                writer.writerow([apm_id, app_name, output_id, matched, count])
+        print(f"\nResults written to {args.output}")
 
 
 # ---------------------------------------------------------------------------
@@ -692,7 +705,7 @@ def main() -> None:
         help="Capture stage (default: 3 = before destination)",
     )
     parser.add_argument(
-        "--appid-field", default="appId",
+        "--appid-field", default="apmId",
         help="Dot-separated field path for appId (default: 'appId')",
     )
     parser.add_argument(
