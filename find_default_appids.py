@@ -53,6 +53,10 @@ CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 30
 CAPTURE_READ_TIMEOUT_PAD = 30
 
+# Hardcoded default output ID — the catch-all azure_blob destination.
+# Set to None to use auto-detection from the Cribl config.
+DEFAULT_OUTPUT_ID = "default"
+
 # ---------------------------------------------------------------------------
 # HTTP session
 # ---------------------------------------------------------------------------
@@ -386,9 +390,9 @@ def run_inspect(client: CriblClient, appid_field: str, level: int) -> None:
 
     # --- default output ID ---
     print("\n[1/3] Detecting default output ID\n")
-    default_id = client.find_default_output_id()
+    default_id = DEFAULT_OUTPUT_ID or client.find_default_output_id()
     if default_id:
-        print(f"  Default output points to: {default_id!r}")
+        print(f"  Default output ID: {default_id!r}")
     else:
         print("  Could not auto-detect default output ID.")
 
@@ -486,7 +490,7 @@ def run_analysis(client: CriblClient, args: argparse.Namespace) -> None:
     # Auto-build filter if user left it at default
     effective_filter = args.filter
     if effective_filter == "true":
-        default_id = client.find_default_output_id()
+        default_id = DEFAULT_OUTPUT_ID or client.find_default_output_id()
         if default_id:
             effective_filter = f"__outputId==='{default_id}'"
             print(f"Auto-detected default output: {default_id!r}")
