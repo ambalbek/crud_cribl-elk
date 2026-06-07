@@ -599,17 +599,44 @@ class ElasticsearchClient:
         password: str | None = None,
         verify_ssl: bool = True,
     ) -> None:
-        self._url = url.rstrip("/")
-        self._index = index
-        self._verify_ssl = verify_ssl
-        self._headers: dict[str, str] = {"Content-Type": "application/x-ndjson"}
-        self._auth: tuple[str, str] | None = None
+        self._url = url.strip().rstrip("/")
+        self._index = index.strip().strip("/")
         self._session = _build_session(verify_ssl=verify_ssl)
+        self._session.headers.update({"Content-Type": "application/x-ndjson"})
+        self._auth: tuple[str, str] | None = None
 
         if api_key:
-            self._headers["Authorization"] = f"ApiKey {api_key}"
+            self._session.headers["Authorization"] = f"ApiKey {api_key}"
         elif username and password:
             self._auth = (username, password)
+
+    def test_connection(self) -> tuple[bool, str]:
+        """Quick connectivity check — GET / on the ES cluster."""
+        try:
+            resp = self._session.get(
+                self._url,
+                auth=self._auth,
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+            )
+            if resp.status_code == 401:
+                return False, f"Authentication failed (HTTP 401): {resp.text[:300]}"
+            if resp.status_code == 403:
+                return False, f"Authorization denied (HTTP 403): {resp.text[:300]}"
+            if resp.status_code >= 400:
+                return False, f"HTTP {resp.status_code}: {resp.text[:300]}"
+            try:
+                data = resp.json()
+                version = data.get("version", {}).get("number", "unknown")
+                name = data.get("name", "unknown")
+                return True, f"Connected — cluster '{name}', ES {version}"
+            except (json.JSONDecodeError, ValueError):
+                return False, (
+                    f"ES URL returned non-JSON (HTTP {resp.status_code}). "
+                    f"Body: {resp.text[:300]}\n"
+                    f"Check that {self._url} is the ES API, not Kibana or a load balancer."
+                )
+        except requests.RequestException as exc:
+            return False, f"Connection failed: {exc}"
 
     def index_results(
         self,
@@ -623,13 +650,21 @@ class ElasticsearchClient:
         if not rows:
             return 0
 
+        if not self._index:
+            log.error("ES index name is empty — cannot index")
+            return 0
+
+        bulk_url = f"{self._url}/{self._index}/_bulk"
         timestamp = datetime.now(timezone.utc).isoformat()
+        # Sanitize group for safe embedding in JSON
+        safe_group = group.replace("\n", " ").replace("\r", " ")
+
         ndjson_lines: list[str] = []
         for apm_id, app_name, output_id, matched, count in rows:
-            action = json.dumps({"index": {"_index": self._index}})
+            action = json.dumps({"index": {}})
             doc = json.dumps({
                 "@timestamp": timestamp,
-                "group": group,
+                "group": safe_group,
                 "apmId": apm_id,
                 "appName": app_name,
                 "outputId": output_id,
@@ -644,26 +679,56 @@ class ElasticsearchClient:
 
         body = "\n".join(ndjson_lines) + "\n"
 
-        log.debug("ES _bulk request: %d docs, %d bytes to %s/_bulk",
-                   len(rows), len(body), self._url)
+        log.info("ES _bulk request: %d docs, %d bytes to %s", len(rows), len(body), bulk_url)
 
         try:
             resp = self._session.post(
-                f"{self._url}/_bulk",
-                headers=self._headers,
+                bulk_url,
                 auth=self._auth,
                 data=body.encode("utf-8"),
-                verify=self._verify_ssl,
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                timeout=(CONNECT_TIMEOUT, 60),
             )
+        except requests.ConnectionError as exc:
+            log.error("ES connection refused: %s\n  Check that ES_URL=%s is reachable.", exc, self._url)
+            return 0
+        except requests.Timeout:
+            log.error("ES request timed out after 60s to %s", bulk_url)
+            return 0
         except requests.RequestException as exc:
-            log.error("Elasticsearch connection failed: %s", exc)
+            log.error("ES request failed: %s", exc)
             return 0
 
+        # Log full response details for debugging
+        log.debug("ES response: HTTP %d, %d bytes, url=%s", resp.status_code, len(resp.text), resp.url)
+
+        # Check if we got redirected (url mismatch = probably wrong endpoint)
+        if resp.url and resp.url.rstrip("/") != bulk_url.rstrip("/"):
+            log.warning(
+                "ES request was redirected: %s -> %s. "
+                "Check that ES_URL points to ES, not Kibana or a proxy.",
+                bulk_url, resp.url,
+            )
+
+        if resp.status_code == 401:
+            log.error(
+                "ES authentication failed (HTTP 401).\n"
+                "  URL: %s\n  Response: %s\n"
+                "  Fix: set ES_API_KEY or ES_USERNAME+ES_PASSWORD in config/env.",
+                bulk_url, resp.text[:500],
+            )
+            return 0
+        if resp.status_code == 403:
+            log.error(
+                "ES authorization denied (HTTP 403).\n"
+                "  URL: %s\n  Response: %s\n"
+                "  Fix: ensure the ES user/key has write access to index '%s'.",
+                bulk_url, resp.text[:500], self._index,
+            )
+            return 0
         if resp.status_code >= 400:
             log.error(
-                "Elasticsearch bulk index failed: HTTP %d\n  URL: %s/_bulk\n  Response: %s",
-                resp.status_code, self._url, resp.text[:1000],
+                "ES bulk index failed: HTTP %d\n  URL: %s\n  Response: %s",
+                resp.status_code, bulk_url, resp.text[:2000],
             )
             return 0
 
@@ -671,8 +736,9 @@ class ElasticsearchClient:
             result = resp.json()
         except (json.JSONDecodeError, ValueError):
             log.error(
-                "Elasticsearch returned non-JSON: HTTP %d — %s",
-                resp.status_code, resp.text[:500],
+                "ES returned non-JSON (HTTP %d).\n  URL: %s\n  Body: %s\n"
+                "  This usually means ES_URL points to a non-ES service (Kibana, proxy, HTML page).",
+                resp.status_code, bulk_url, resp.text[:1000],
             )
             return 0
 
@@ -681,18 +747,20 @@ class ElasticsearchClient:
                 err = item.get("index", {}).get("error")
                 if err:
                     log.error(
-                        "ES doc error: type=%s reason=%s",
-                        err.get("type", "?"), err.get("reason", "?"),
+                        "ES doc error: type=%s, reason=%s, caused_by=%s",
+                        err.get("type", "?"),
+                        err.get("reason", "?"),
+                        err.get("caused_by", {}).get("reason", ""),
                     )
             error_count = sum(
                 1 for item in result.get("items", [])
                 if "error" in item.get("index", {})
             )
-            log.warning(
-                "Elasticsearch bulk index: %d/%d docs had errors",
-                error_count, len(rows),
-            )
-            return len(rows) - error_count
+            log.warning("ES bulk: %d/%d docs failed", error_count, len(rows))
+            indexed = len(rows) - error_count
+            if indexed > 0:
+                print(f"\nElasticsearch: indexed {indexed} doc(s) to {self._index} ({error_count} failed)")
+            return indexed
 
         indexed = len(result.get("items", []))
         log.info("Elasticsearch: indexed %d doc(s) to %s", indexed, self._index)
@@ -702,8 +770,8 @@ class ElasticsearchClient:
 
 def _build_es_client(args: argparse.Namespace) -> ElasticsearchClient | None:
     """Build an ElasticsearchClient from args/env, or return None if not configured."""
-    es_url = args.es_url or os.environ.get("ES_URL", "").strip()
-    es_index = args.es_index or os.environ.get("ES_INDEX", "").strip()
+    es_url = (args.es_url or os.environ.get("ES_URL", "")).strip()
+    es_index = (args.es_index or os.environ.get("ES_INDEX", "")).strip()
 
     if not es_url or not es_index:
         return None
@@ -1188,7 +1256,13 @@ def run_dry_run(
     print("\n[4/4] Elasticsearch")
     es_client = _build_es_client(args)
     if es_client:
-        print(f"  Configured — {es_client._url} / {es_client._index}")
+        es_ok, es_msg = es_client.test_connection()
+        if es_ok:
+            print(f"  OK — {es_client._url} / {es_client._index}")
+            print(f"  {es_msg}")
+        else:
+            print(f"  FAIL — {es_msg}")
+            ok = False
     else:
         print("  Not configured (results will not be indexed)")
 
