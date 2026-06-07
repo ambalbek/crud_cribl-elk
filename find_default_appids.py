@@ -502,17 +502,51 @@ def run_analysis(client: CriblClient, args: argparse.Namespace) -> None:
                 "filter, or pass --filter explicitly."
             )
 
-    # Step 1 — capture
-    print(f"\n[Step 1/3] Live capture")
-    events = _progress_capture(
-        client,
-        filter_expr=effective_filter,
-        duration=args.seconds,
-        max_events=args.max_events,
-        level=args.level,
-    )
+    # Step 1 — capture (with optional repeated rounds)
+    rounds = args.rounds
+    interval = args.interval
+    print(f"\n[Step 1/3] Live capture ({rounds} round(s), {args.seconds}s each)")
 
-    if not events:
+    combo_counts: Counter[tuple[str, str, str]] = Counter()
+    raw_parse_count = 0
+    missing_count = 0
+    total_events = 0
+
+    for rnd in range(1, rounds + 1):
+        if rounds > 1:
+            print(f"\n  --- Round {rnd}/{rounds} ---")
+
+        events = _progress_capture(
+            client,
+            filter_expr=effective_filter,
+            duration=args.seconds,
+            max_events=args.max_events,
+            level=args.level,
+        )
+        total_events += len(events)
+
+        for ev in events:
+            top_val = get_nested(ev, args.appid_field)
+            apm_id = extract_appid(ev, args.appid_field)
+            if apm_id is not None:
+                app_name = extract_appid(ev, "appName") or ""
+                output_id = str(ev.get("__outputId", ""))
+                combo_counts[(apm_id, app_name, output_id)] += 1
+                if top_val is None:
+                    raw_parse_count += 1
+            else:
+                missing_count += 1
+
+        if rounds > 1:
+            app_ids_so_far = {apm_id for apm_id, _, _ in combo_counts}
+            print(f"  Cumulative: {len(app_ids_so_far)} distinct {args.appid_field} values, {total_events} events")
+
+        if rnd < rounds:
+            print(f"  Waiting {interval}s before next round ...", end="", flush=True)
+            time.sleep(interval)
+            print(" done")
+
+    if total_events == 0:
         print(
             "\nNo events captured. Possible reasons:\n"
             "  - No traffic hitting the default output right now\n"
@@ -521,25 +555,8 @@ def run_analysis(client: CriblClient, args: argparse.Namespace) -> None:
         )
         return
 
-    # Extract distinct (apmId, appName, outputId) tuples with counts
-    # Key: (apmId, appName, outputId) -> event count
-    combo_counts: Counter[tuple[str, str, str]] = Counter()
-    raw_parse_count = 0
-    missing_count = 0
-    for ev in events:
-        top_val = get_nested(ev, args.appid_field)
-        apm_id = extract_appid(ev, args.appid_field)
-        if apm_id is not None:
-            app_name = extract_appid(ev, "appName") or ""
-            output_id = str(ev.get("__outputId", ""))
-            combo_counts[(apm_id, app_name, output_id)] += 1
-            if top_val is None:
-                raw_parse_count += 1
-        else:
-            missing_count += 1
-
     app_ids = {apm_id for apm_id, _, _ in combo_counts}
-    print(f"  Distinct {args.appid_field} values: {len(app_ids)}")
+    print(f"\n  Distinct {args.appid_field} values: {len(app_ids)}")
     print(f"  Distinct (apmId, appName, output) combos: {len(combo_counts)}")
     if raw_parse_count:
         print(f"  ({raw_parse_count} extracted from _raw JSON)")
@@ -548,7 +565,7 @@ def run_analysis(client: CriblClient, args: argparse.Namespace) -> None:
 
     if not app_ids:
         print(
-            f"\nNo {args.appid_field} values found in {len(events)} events."
+            f"\nNo {args.appid_field} values found in {total_events} events."
             f"\nRun with --inspect to examine event structure."
         )
         return
@@ -598,7 +615,7 @@ def run_analysis(client: CriblClient, args: argparse.Namespace) -> None:
 
     print(f"\nTotal distinct apmIds : {len(app_ids)}")
     print(f"Unmatched (DEFAULT)   : {len(unmatched_ids)}")
-    print(f"Total events captured : {len(events)}")
+    print(f"Total events captured : {total_events}")
 
     # CSV — all rows, not just unmatched
     write_mode = "a" if args.append else "w"
@@ -675,10 +692,14 @@ def main() -> None:
               # 2. Full analysis (auto-detects default output filter)
               python find_default_appids.py --group mygroup --seconds 60
 
-              # 3. Run again later and accumulate results
+              # 3. Sample over a longer window to catch infrequent appIds
+              python find_default_appids.py --group mygroup --seconds 30 \\
+                --rounds 10 --interval 120
+
+              # 4. Run again later and accumulate results
               python find_default_appids.py --group mygroup --seconds 60 --append
 
-              # 4. Or with explicit filter
+              # 5. Or with explicit filter
               python find_default_appids.py --group mygroup \\
                 --filter "__outputId==='my_default_blob'" --seconds 60
         """),
@@ -706,7 +727,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--appid-field", default="apmId",
-        help="Dot-separated field path for appId (default: 'appId')",
+        help="Dot-separated field path for appId (default: 'apmId')",
     )
     parser.add_argument(
         "--match-mode", default="exact",
@@ -720,6 +741,14 @@ def main() -> None:
     parser.add_argument(
         "--append", action="store_true",
         help="Append to CSV instead of overwriting (deduplicates automatically)",
+    )
+    parser.add_argument(
+        "--rounds", type=int, default=1,
+        help="Number of capture rounds (default: 1)",
+    )
+    parser.add_argument(
+        "--interval", type=int, default=60,
+        help="Seconds to wait between capture rounds (default: 60)",
     )
     parser.add_argument(
         "--inspect", action="store_true",
