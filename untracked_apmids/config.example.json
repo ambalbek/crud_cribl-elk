@@ -1,0 +1,42 @@
+{
+  "auth": {
+    "cribl_url": "https://main-myorg.cribl.cloud",
+    "client_id": "",
+    "client_secret": ""
+  },
+
+  "capture": {
+    "groups": ["prod-worker-group"],
+    "seconds": 30,
+    "max_events": 5000,
+    "level": 3,
+    "rounds": 10,
+    "interval": 120,
+    "appid_field": "apmId"
+  },
+
+  "matching": {
+    "mode": "exact",
+    "default_output": "azure_blob:foo-company-default"
+  },
+
+  "output": {
+    "format": "csv",
+    "append": false
+  },
+
+  "elasticsearch": {
+    "url": "https://elk.internal:9200",
+    "index": "cribl-untracked-appids",
+    "api_key": ""
+  },
+
+  "logging": {
+    "log_file": "find_default_appids.log",
+    "verbose": false
+  },
+
+  "connection": {
+    "verify_ssl": true
+  }
+}

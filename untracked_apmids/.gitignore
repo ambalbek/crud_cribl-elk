@@ -1,0 +1,14 @@
+# Credentials — never commit these
+.env
+.env.*
+!.env.example
+config.json
+config.*.json
+!config.example.json
+
+# Output files
+appids_without_destination_*.csv
+appids_without_destination_*.json
+
+# Logs
+*.log
