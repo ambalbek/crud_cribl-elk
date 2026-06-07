@@ -1320,8 +1320,8 @@ def _print_table(
 # ---------------------------------------------------------------------------
 
 
-def _build_parser(config_defaults: dict[str, Any] | None = None) -> argparse.ArgumentParser:
-    """Build the argument parser, optionally applying config-file defaults."""
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser."""
     parser = argparse.ArgumentParser(
         description="Find appIds with no matching Azure Blob destination (read-only).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1380,10 +1380,6 @@ def _build_parser(config_defaults: dict[str, Any] | None = None) -> argparse.Arg
         """),
     )
 
-    # Apply config-file defaults before defining args
-    if config_defaults:
-        parser.set_defaults(**config_defaults)
-
     parser.add_argument(
         "--config", default=None, metavar="PATH",
         help="Path to JSON config file (see config.example.json). "
@@ -1394,60 +1390,35 @@ def _build_parser(config_defaults: dict[str, Any] | None = None) -> argparse.Arg
         help="Cribl worker group name(s) — multiple groups run in parallel",
     )
     parser.add_argument(
-        "--filter",
-        default="true",
-        help=(
-            "JavaScript filter for capture. If omitted, auto-detects the "
-            "default output and filters to it. (default: auto-detect)"
-        ),
+        "--filter", default=None,
+        help="JavaScript filter for capture (default: auto-detect from default output)",
     )
     parser.add_argument(
         "--default-output", default=None, metavar="ID",
         help="Default output ID (e.g. 'azure_blob:foo-default'). "
              "Overrides auto-detection and CRIBL_DEFAULT_OUTPUT_ID env var.",
     )
-    parser.add_argument(
-        "--seconds", type=int, default=30,
-        help="Capture duration in seconds (default: 30)",
-    )
-    parser.add_argument(
-        "--max-events", type=int, default=5000,
-        help="Max events to capture (default: 5000, API max: 10000)",
-    )
-    parser.add_argument(
-        "--level", type=int, default=3, choices=[0, 1, 2, 3],
-        help="Capture stage (default: 3 = before destination)",
-    )
-    parser.add_argument(
-        "--appid-field", default="apmId",
-        help="Dot-separated field path for appId (default: 'apmId')",
-    )
-    parser.add_argument(
-        "--match-mode", default="exact",
-        choices=["exact", "contains", "partition"],
-        help="How to match appId to destination container (default: exact)",
-    )
-    default_output = f"appids_without_destination_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-    parser.add_argument(
-        "--output", default=default_output,
-        help="Output CSV path (default: appids_without_destination_YYYYMMDD_HHMMSS.csv)",
-    )
-    parser.add_argument(
-        "--append", action="store_true",
-        help="Append to CSV instead of overwriting (deduplicates automatically)",
-    )
-    parser.add_argument(
-        "--rounds", type=int, default=1,
-        help="Number of capture rounds (default: 1)",
-    )
-    parser.add_argument(
-        "--interval", type=int, default=60,
-        help="Seconds to wait between capture rounds (default: 60)",
-    )
-    parser.add_argument(
-        "--format", default="csv", choices=["csv", "json", "both"],
-        help="Output format (default: csv)",
-    )
+    parser.add_argument("--seconds", type=int, default=None,
+                        help="Capture duration in seconds (default: 30)")
+    parser.add_argument("--max-events", type=int, default=None,
+                        help="Max events to capture (default: 5000, API max: 10000)")
+    parser.add_argument("--level", type=int, default=None, choices=[0, 1, 2, 3],
+                        help="Capture stage (default: 3 = before destination)")
+    parser.add_argument("--appid-field", default=None,
+                        help="Dot-separated field path for appId (default: 'apmId')")
+    parser.add_argument("--match-mode", default=None,
+                        choices=["exact", "contains", "partition"],
+                        help="How to match appId to destination container (default: exact)")
+    parser.add_argument("--output", default=None,
+                        help="Output CSV path (default: appids_without_destination_YYYYMMDD_HHMMSS.csv)")
+    parser.add_argument("--append", action="store_true", default=None,
+                        help="Append to CSV instead of overwriting (deduplicates automatically)")
+    parser.add_argument("--rounds", type=int, default=None,
+                        help="Number of capture rounds (default: 1)")
+    parser.add_argument("--interval", type=int, default=None,
+                        help="Seconds to wait between capture rounds (default: 60)")
+    parser.add_argument("--format", default=None, choices=["csv", "json", "both"],
+                        help="Output format (default: csv)")
     parser.add_argument(
         "--diff-csv", default=None, metavar="PATH",
         help="Compare against a previous CSV to show newly appeared appIds. "
@@ -1479,11 +1450,11 @@ def _build_parser(config_defaults: dict[str, Any] | None = None) -> argparse.Arg
         help="Write log output to file (in addition to stderr)",
     )
     parser.add_argument(
-        "--no-verify-ssl", action="store_true",
+        "--no-verify-ssl", action="store_true", default=None,
         help="Disable SSL certificate verification",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true",
+        "-v", "--verbose", action="store_true", default=None,
         help="Enable debug logging",
     )
     return parser
@@ -1495,13 +1466,38 @@ def main() -> None:
     pre_parser.add_argument("--config", default=None)
     pre_args, _ = pre_parser.parse_known_args()
 
-    config_defaults: dict[str, Any] | None = None
+    config_defaults: dict[str, Any] = {}
     if pre_args.config:
         config_defaults = load_config(pre_args.config)
 
-    # Pass 2: full parse with config defaults applied
-    parser = _build_parser(config_defaults)
+    # Pass 2: full parse
+    parser = _build_parser()
     args = parser.parse_args()
+
+    # Merge: CLI args > config.json > hardcoded defaults
+    for key, value in config_defaults.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, value)
+
+    # Hardcoded fallbacks for anything still None
+    _fallbacks = {
+        "filter": "true",
+        "seconds": 30,
+        "max_events": 5000,
+        "level": 3,
+        "appid_field": "apmId",
+        "match_mode": "exact",
+        "output": f"appids_without_destination_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+        "append": False,
+        "rounds": 1,
+        "interval": 60,
+        "format": "csv",
+        "verbose": False,
+        "no_verify_ssl": False,
+    }
+    for key, value in _fallbacks.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, value)
 
     # Validate required fields
     if not args.group:
