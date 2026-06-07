@@ -743,23 +743,43 @@ class ElasticsearchClient:
             return 0
 
         if result.get("errors"):
+            error_count = 0
+            seen_errors: set[str] = set()
             for item in result.get("items", []):
                 err = item.get("index", {}).get("error")
                 if err:
-                    log.error(
-                        "ES doc error: type=%s, reason=%s, caused_by=%s",
-                        err.get("type", "?"),
-                        err.get("reason", "?"),
-                        err.get("caused_by", {}).get("reason", ""),
-                    )
-            error_count = sum(
-                1 for item in result.get("items", [])
-                if "error" in item.get("index", {})
+                    error_count += 1
+                    err_key = f"{err.get('type', '?')}:{err.get('reason', '?')[:100]}"
+                    if err_key not in seen_errors:
+                        seen_errors.add(err_key)
+                        log.error(
+                            "ES doc error [%d of %d]:\n"
+                            "  type: %s\n"
+                            "  reason: %s\n"
+                            "  caused_by: %s\n"
+                            "  full_error: %s",
+                            error_count, len(rows),
+                            err.get("type", "?"),
+                            err.get("reason", "?"),
+                            json.dumps(err.get("caused_by", {})),
+                            json.dumps(err)[:2000],
+                        )
+            if len(seen_errors) < error_count:
+                log.error(
+                    "  ... and %d more docs with same error(s)",
+                    error_count - len(seen_errors),
+                )
+            log.warning(
+                "ES bulk index: %d/%d docs FAILED. Unique error types: %s",
+                error_count, len(rows), ", ".join(sorted(seen_errors)),
             )
-            log.warning("ES bulk: %d/%d docs failed", error_count, len(rows))
+            print(
+                f"\nElasticsearch: {error_count}/{len(rows)} docs FAILED. "
+                f"Check log file for details."
+            )
             indexed = len(rows) - error_count
             if indexed > 0:
-                print(f"\nElasticsearch: indexed {indexed} doc(s) to {self._index} ({error_count} failed)")
+                print(f"  ({indexed} doc(s) indexed successfully)")
             return indexed
 
         indexed = len(result.get("items", []))
