@@ -402,7 +402,15 @@ class CriblClient:
             url, headers=self._headers(), timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)
         )
         _raise_for_status(resp)
-        data = resp.json()
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            body_preview = resp.text[:200] if resp.text else "(empty)"
+            raise RuntimeError(
+                f"Group '{self._group}': expected JSON from {url} "
+                f"but got: {body_preview}\n"
+                f"Check that the group name is correct and exists in Cribl."
+            )
         return data.get("items", data) if isinstance(data, dict) else data
 
     def list_azure_blob_outputs(self) -> list[dict[str, Any]]:
