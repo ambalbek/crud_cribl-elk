@@ -364,8 +364,24 @@ class CriblAuth:
             timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
         )
         _raise_for_status(resp)
-        data = resp.json()
-        self._token = data.get("token") or data["access_token"]
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            body_preview = resp.text[:300] if resp.text else "(empty)"
+            raise AuthenticationError(
+                f"Login endpoint returned non-JSON response.\n"
+                f"  URL: {url}\n"
+                f"  Status: {resp.status_code}\n"
+                f"  Body: {body_preview}\n"
+                f"  Check that CRIBL_URL is correct (should be the base URL, "
+                f"e.g. https://leader:9000 or https://main-org.cribl.cloud)"
+            )
+        self._token = data.get("token") or data.get("access_token")
+        if not self._token:
+            raise AuthenticationError(
+                f"Login succeeded (HTTP {resp.status_code}) but no token in response.\n"
+                f"  Keys returned: {list(data.keys())}"
+            )
         self._expires_at = time.time() + 3600
         log.info("Leader login token acquired")
 
@@ -989,6 +1005,10 @@ def _analyse_group(
             )
             elapsed = time.monotonic() - t0
             _print(f" done ({elapsed:.1f}s, {len(events)} events)")
+            log.info(
+                "Round %d/%d [%s]: captured %d events in %.1fs",
+                rnd, rounds, client._group, len(events), elapsed,
+            )
             total_events += len(events)
 
             for ev in events:
@@ -1027,6 +1047,7 @@ def _analyse_group(
 
     # Fetch destinations and match
     destinations = client.list_azure_blob_outputs()
+    log.info("[%s] %d azure_blob destinations found", client._group, len(destinations))
     _print(f"  Found {len(destinations)} azure_blob destination(s) ({client._group}).")
     if destinations:
         id_width = max(len(d.get("id", "")) for d in destinations)
@@ -1043,6 +1064,11 @@ def _analyse_group(
         rows.append((apm_id, app_name, output_id, matched, count))
 
     unmatched_ids = {r[0] for r in rows if r[3] == "DEFAULT"}
+    log.info(
+        "[%s] Done: %d events, %d distinct appIds, %d unmatched, %d from _raw, %d missing field",
+        client._group, total_events, len(app_ids), len(unmatched_ids),
+        raw_parse_count, missing_count,
+    )
     output_text = buf.getvalue() if buf else ""
 
     if interrupted:
@@ -1137,6 +1163,11 @@ def run_analysis(
     args: argparse.Namespace,
 ) -> int:
     """Run analysis across all groups. Returns exit code."""
+    groups = [c._group for c in clients]
+    log.info(
+        "Starting analysis: groups=%s, rounds=%d, seconds=%d, interval=%d",
+        groups, args.rounds, args.seconds, args.interval,
+    )
     # Resolve default output ID
     default_id = args.default_output or _resolve_default_output_id(clients[0])
 
@@ -1210,9 +1241,16 @@ def run_analysis(
             failed_groups.append(clients[0]._group)
 
     if failed_groups:
+        log.warning("Groups failed: %s", ", ".join(failed_groups))
         print(f"\nWARNING: {len(failed_groups)} group(s) failed: {', '.join(failed_groups)}")
 
+    log.info(
+        "Capture complete: %d total events, %d distinct appIds, %d groups OK, %d groups failed",
+        grand_total_events, len(all_app_ids), len(groups) - len(failed_groups), len(failed_groups),
+    )
+
     if grand_total_events == 0:
+        log.warning("No events captured across all groups")
         print(
             "\nNo events captured. Possible reasons:\n"
             "  - No traffic hitting the default output right now\n"
@@ -1222,6 +1260,7 @@ def run_analysis(
         return EXIT_PARTIAL if failed_groups else EXIT_ERROR
 
     if not all_app_ids:
+        log.warning("No %s values found in %d events", args.appid_field, grand_total_events)
         print(
             f"\nNo {args.appid_field} values found in {grand_total_events} events."
             f"\nRun with --inspect to examine event structure."
@@ -1238,11 +1277,16 @@ def run_analysis(
     new_rows = [r for r in all_rows if r[0] in new_app_ids] if known_appids else all_rows
     new_unmatched = {r[0] for r in new_rows if r[3] == "DEFAULT"}
 
+    log.info(
+        "appId summary: total=%d, known=%d, new=%d, new_unmatched=%d",
+        len(all_app_ids), len(all_app_ids - new_app_ids), len(new_app_ids), len(new_unmatched),
+    )
     print(f"\n  Distinct {args.appid_field} values (total) : {len(all_app_ids)}")
     print(f"  Already known (in previous CSV)          : {len(all_app_ids - new_app_ids)}")
     print(f"  New {args.appid_field} values              : {len(new_app_ids)}")
 
     if known_appids and not new_app_ids:
+        log.info("No new appIds found — all %d already known", len(all_app_ids))
         print(f"\nNo new {args.appid_field} values found — all {len(all_app_ids)} already exist in {existing_csv}")
         return EXIT_OK
 
@@ -1270,6 +1314,7 @@ def run_analysis(
                 print(f"    - {aid}")
 
     # Write output — only new rows
+    log.info("Writing %d new row(s) to output", len(new_rows))
     fmt = args.format
     if fmt == "csv":
         write_csv(new_rows, args.output, args.append)
@@ -1284,6 +1329,7 @@ def run_analysis(
     # Index results to Elasticsearch
     es_client = _build_es_client(args)
     if es_client and new_rows:
+        log.info("Indexing %d doc(s) to Elasticsearch %s/%s", len(new_rows), es_client._url, es_client._index)
         es_client.index_results(
             new_rows,
             group=", ".join(groups),
@@ -1291,7 +1337,9 @@ def run_analysis(
             is_new=bool(known_appids),
         )
 
-    return EXIT_PARTIAL if failed_groups else EXIT_OK
+    exit_code = EXIT_PARTIAL if failed_groups else EXIT_OK
+    log.info("Analysis complete — exit code %d", exit_code)
+    return exit_code
 
 
 def _print_table(
