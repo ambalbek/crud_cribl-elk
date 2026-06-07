@@ -189,6 +189,8 @@ def load_config(path: str) -> dict[str, Any]:
             defaults[key] = output[key]
     if "diff_csv" in output:
         defaults["diff_csv"] = output["diff_csv"]
+    if "lookup" in output:
+        defaults["lookup"] = output["lookup"]
 
     # --- elasticsearch section ---
     es_cfg = raw.get("elasticsearch", {})
@@ -602,6 +604,7 @@ class ElasticsearchClient:
         self._verify_ssl = verify_ssl
         self._headers: dict[str, str] = {"Content-Type": "application/x-ndjson"}
         self._auth: tuple[str, str] | None = None
+        self._session = _build_session(verify_ssl=verify_ssl)
 
         if api_key:
             self._headers["Authorization"] = f"ApiKey {api_key}"
@@ -641,41 +644,60 @@ class ElasticsearchClient:
 
         body = "\n".join(ndjson_lines) + "\n"
 
+        log.debug("ES _bulk request: %d docs, %d bytes to %s/_bulk",
+                   len(rows), len(body), self._url)
+
         try:
-            resp = requests.post(
+            resp = self._session.post(
                 f"{self._url}/_bulk",
                 headers=self._headers,
                 auth=self._auth,
-                data=body,
+                data=body.encode("utf-8"),
                 verify=self._verify_ssl,
                 timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
             )
-            if resp.status_code >= 400:
-                log.error(
-                    "Elasticsearch bulk index failed: HTTP %d — %s",
-                    resp.status_code, resp.text[:500],
-                )
-                return 0
-
-            result = resp.json()
-            if result.get("errors"):
-                error_count = sum(
-                    1 for item in result.get("items", [])
-                    if "error" in item.get("index", {})
-                )
-                log.warning(
-                    "Elasticsearch bulk index: %d/%d docs had errors",
-                    error_count, len(rows),
-                )
-                return len(rows) - error_count
-
-            indexed = len(result.get("items", []))
-            print(f"\nElasticsearch: indexed {indexed} doc(s) to {self._index}")
-            return indexed
-
         except requests.RequestException as exc:
             log.error("Elasticsearch connection failed: %s", exc)
             return 0
+
+        if resp.status_code >= 400:
+            log.error(
+                "Elasticsearch bulk index failed: HTTP %d\n  URL: %s/_bulk\n  Response: %s",
+                resp.status_code, self._url, resp.text[:1000],
+            )
+            return 0
+
+        try:
+            result = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            log.error(
+                "Elasticsearch returned non-JSON: HTTP %d — %s",
+                resp.status_code, resp.text[:500],
+            )
+            return 0
+
+        if result.get("errors"):
+            for item in result.get("items", []):
+                err = item.get("index", {}).get("error")
+                if err:
+                    log.error(
+                        "ES doc error: type=%s reason=%s",
+                        err.get("type", "?"), err.get("reason", "?"),
+                    )
+            error_count = sum(
+                1 for item in result.get("items", [])
+                if "error" in item.get("index", {})
+            )
+            log.warning(
+                "Elasticsearch bulk index: %d/%d docs had errors",
+                error_count, len(rows),
+            )
+            return len(rows) - error_count
+
+        indexed = len(result.get("items", []))
+        log.info("Elasticsearch: indexed %d doc(s) to %s", indexed, self._index)
+        print(f"\nElasticsearch: indexed {indexed} doc(s) to {self._index}")
+        return indexed
 
 
 def _build_es_client(args: argparse.Namespace) -> ElasticsearchClient | None:
@@ -698,6 +720,47 @@ def _build_es_client(args: argparse.Namespace) -> ElasticsearchClient | None:
         password=password or None,
         verify_ssl=not args.no_verify_ssl,
     )
+
+
+# ---------------------------------------------------------------------------
+# Lookup table loader
+# ---------------------------------------------------------------------------
+
+
+def load_lookup_appids(path: str) -> set[str]:
+    """Load known container names from a lookup JSON file.
+
+    Reads the ``azure_storage_account_containers`` key and returns the
+    values as a set of strings (case-insensitive, lowered).
+
+    Example file::
+
+        {
+          "azure_storage_account_containers": ["app-one", "app-two"],
+          "other_key": "ignored"
+        }
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        log.error("Lookup file not found: %s", path)
+        return set()
+    except json.JSONDecodeError as exc:
+        log.error("Lookup file is not valid JSON: %s — %s", path, exc)
+        return set()
+
+    containers = data.get("azure_storage_account_containers", [])
+    if not isinstance(containers, list):
+        log.error(
+            "Lookup file %s: 'azure_storage_account_containers' must be a list, got %s",
+            path, type(containers).__name__,
+        )
+        return set()
+
+    ids = {str(c).lower() for c in containers if c}
+    log.info("Loaded %d container(s) from lookup %s", len(ids), path)
+    return ids
 
 
 # ---------------------------------------------------------------------------
@@ -1273,21 +1336,32 @@ def run_analysis(
     if existing_csv:
         known_appids = load_all_known_appids(existing_csv)
 
-    new_app_ids = all_app_ids - known_appids
-    new_rows = [r for r in all_rows if r[0] in new_app_ids] if known_appids else all_rows
+    # Load lookup table — appIds with existing containers are excluded
+    lookup_appids: set[str] = set()
+    if args.lookup:
+        lookup_appids = load_lookup_appids(args.lookup)
+
+    excluded = known_appids | {aid for aid in all_app_ids if aid.lower() in lookup_appids}
+    new_app_ids = all_app_ids - excluded
+    new_rows = [r for r in all_rows if r[0] in new_app_ids] if excluded else all_rows
     new_unmatched = {r[0] for r in new_rows if r[3] == "DEFAULT"}
+    in_lookup = {aid for aid in all_app_ids if aid.lower() in lookup_appids}
 
     log.info(
-        "appId summary: total=%d, known=%d, new=%d, new_unmatched=%d",
-        len(all_app_ids), len(all_app_ids - new_app_ids), len(new_app_ids), len(new_unmatched),
+        "appId summary: total=%d, in_csv=%d, in_lookup=%d, new=%d, new_unmatched=%d",
+        len(all_app_ids), len(all_app_ids & known_appids), len(in_lookup),
+        len(new_app_ids), len(new_unmatched),
     )
     print(f"\n  Distinct {args.appid_field} values (total) : {len(all_app_ids)}")
-    print(f"  Already known (in previous CSV)          : {len(all_app_ids - new_app_ids)}")
+    print(f"  Already known (in previous CSV)          : {len(all_app_ids & known_appids)}")
+    if lookup_appids:
+        print(f"  In lookup (have container)               : {len(in_lookup)}")
     print(f"  New {args.appid_field} values              : {len(new_app_ids)}")
 
-    if known_appids and not new_app_ids:
-        log.info("No new appIds found — all %d already known", len(all_app_ids))
-        print(f"\nNo new {args.appid_field} values found — all {len(all_app_ids)} already exist in {existing_csv}")
+    if excluded and not new_app_ids:
+        log.info("No new appIds found — all %d excluded (csv=%d, lookup=%d)",
+                 len(all_app_ids), len(all_app_ids & known_appids), len(in_lookup))
+        print(f"\nNo new {args.appid_field} values found — all {len(all_app_ids)} already accounted for")
         return EXIT_OK
 
     # Print table (new apmIds only)
@@ -1479,6 +1553,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--diff-csv", default=None, metavar="PATH",
         help="Compare against a previous CSV to show newly appeared appIds. "
              "If omitted, auto-detects the latest CSV in the current directory.",
+    )
+    parser.add_argument(
+        "--lookup", default=None, metavar="PATH",
+        help="Path to lookup JSON file (e.g. APP_foo.json). "
+             "appIds found in 'azure_storage_account_containers' are excluded from results.",
     )
     parser.add_argument(
         "--es-url", default=None, metavar="URL",
