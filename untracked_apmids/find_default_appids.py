@@ -434,6 +434,33 @@ class CriblClient:
     def list_azure_blob_outputs(self) -> list[dict[str, Any]]:
         return [o for o in self.list_outputs() if o.get("type") == "azure_blob"]
 
+    def list_routes(self) -> list[dict[str, Any]]:
+        """GET /routes — list all configured routes."""
+        url = f"{self._base}/routes"
+        log.debug("GET %s", url)
+        resp = self._session.get(
+            url, headers=self._headers(), timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)
+        )
+        _raise_for_status(resp)
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            body_preview = resp.text[:200] if resp.text else "(empty)"
+            raise RuntimeError(
+                f"Group '{self._group}': expected JSON from {url} "
+                f"but got: {body_preview}\n"
+                f"Check that the group name is correct and exists in Cribl."
+            )
+        # Routes live under data.items or just items depending on version
+        if isinstance(data, dict):
+            routes = data.get("items") or data.get("routes") or []
+            # Some versions nest routes under a single group object
+            if not routes and "groups" in data:
+                for g in data["groups"].values():
+                    routes.extend(g.get("routes", []))
+            return routes
+        return data
+
     def find_default_output_id(self) -> str | None:
         """Find the output ID marked as the default destination."""
         for o in self.list_outputs():
@@ -579,6 +606,147 @@ def match_appid_to_dest(
             if container == app_lower or app_id in part_expr:
                 return dest_id
     return None
+
+
+def check_lookup_route_dest_status(
+    lookup_appids_hitting_default: set[str],
+    destinations: list[dict[str, Any]],
+    routes: list[dict[str, Any]],
+    match_mode: str,
+) -> list[dict[str, Any]]:
+    """Check whether lookup appIds (have containers) also have routes and
+    destinations configured in Cribl.
+
+    Returns a list of dicts with status for each lookup appId that was
+    captured hitting the default destination:
+      {apmId, has_destination, destination_id, has_route, route_id, route_output, status}
+    """
+    results = []
+    for app_id in sorted(lookup_appids_hitting_default):
+        # Check if a matching azure_blob destination exists.
+        # First try the standard containerName-based match, then fall back
+        # to checking if the destination id or name contains the appId
+        # (e.g. destination "azure_blob:prod-my-app" for appId "my-app").
+        app_lower = app_id.lower()
+        dest_id = match_appid_to_dest(app_id, destinations, match_mode)
+        if dest_id is None:
+            for dest in destinations:
+                did = (dest.get("id") or "").lower()
+                dname = (dest.get("name") or "").lower()
+                if app_lower in did or app_lower in dname:
+                    dest_id = dest.get("id", "?")
+                    break
+
+        # Check if any route references this appId — route names often
+        # contain the appId as a substring (e.g. route "prod-my-app-blob"
+        # for appId "my-app").
+        route_match_id = None
+        route_match_output = None
+        for route in routes:
+            route_filter = str(route.get("filter", ""))
+            route_name = str(route.get("name", ""))
+            route_output = route.get("output", "")
+            route_id = route.get("id", route_name)
+
+            # Check if the route name or ID contains this appId
+            if app_lower in route_name.lower() or app_lower in str(route_id).lower():
+                route_match_id = route_id
+                route_match_output = route_output
+                break
+
+            # Check if the route filter references this appId
+            if app_lower in route_filter.lower():
+                route_match_id = route_id
+                route_match_output = route_output
+                break
+
+            # Check if the route output points to a destination that
+            # matches this appId's container
+            if route_output and dest_id and route_output == dest_id:
+                route_match_id = route_id
+                route_match_output = route_output
+                break
+
+        has_dest = dest_id is not None
+        has_route = route_match_id is not None
+
+        if has_dest and has_route:
+            status = "CONFIGURED (has route + destination)"
+        elif has_dest and not has_route:
+            status = "MISSING ROUTE (destination exists, no route)"
+        elif not has_dest and has_route:
+            status = "MISSING DESTINATION (route exists, no destination)"
+        else:
+            status = "MISSING BOTH (no route, no destination)"
+
+        results.append({
+            "apmId": app_id,
+            "has_destination": has_dest,
+            "destination_id": dest_id or "NONE",
+            "has_route": has_route,
+            "route_id": route_match_id or "NONE",
+            "route_output": route_match_output or "NONE",
+            "status": status,
+        })
+
+    return results
+
+
+def _print_lookup_status_table(results: list[dict[str, Any]]) -> None:
+    """Print a table showing route/destination status for lookup appIds."""
+    if not results:
+        return
+
+    apm_w = max(len(r["apmId"]) for r in results)
+    apm_w = max(apm_w, 5)
+    dest_w = max(len(r["destination_id"]) for r in results)
+    dest_w = max(dest_w, 14)
+    route_w = max(len(r["route_id"]) for r in results)
+    route_w = max(route_w, 8)
+
+    print(
+        f"\n{'apmId':<{apm_w}s}   {'Has Dest':>8s}   {'Destination':<{dest_w}s}   "
+        f"{'Has Route':>9s}   {'Route':<{route_w}s}   Status"
+    )
+    print("-" * (apm_w + dest_w + route_w + 55))
+
+    for r in results:
+        dest_flag = "YES" if r["has_destination"] else "NO"
+        route_flag = "YES" if r["has_route"] else "NO"
+        marker = ""
+        if not r["has_destination"] or not r["has_route"]:
+            marker = " <<<"
+        print(
+            f"{r['apmId']:<{apm_w}s}   {dest_flag:>8s}   {r['destination_id']:<{dest_w}s}   "
+            f"{route_flag:>9s}   {r['route_id']:<{route_w}s}   {r['status']}{marker}"
+        )
+
+    missing_route = sum(1 for r in results if not r["has_route"])
+    missing_dest = sum(1 for r in results if not r["has_destination"])
+    missing_both = sum(1 for r in results if not r["has_route"] and not r["has_destination"])
+    fully_configured = sum(1 for r in results if r["has_route"] and r["has_destination"])
+
+    print(f"\n  Total lookup appIds hitting default : {len(results)}")
+    print(f"  Fully configured (route + dest)     : {fully_configured}")
+    print(f"  Missing route only                  : {missing_route - missing_both}")
+    print(f"  Missing destination only            : {missing_dest - missing_both}")
+    print(f"  Missing both                        : {missing_both}")
+
+
+def write_lookup_status_csv(
+    results: list[dict[str, Any]],
+    output_path: str,
+) -> None:
+    """Write lookup appId route/destination status to CSV."""
+    if not results:
+        return
+    header = ["apmId", "has_destination", "destination_id", "has_route",
+              "route_id", "route_output", "status"]
+    with open(output_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(results)
+    print(f"\nLookup status CSV written to {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -1441,21 +1609,83 @@ def run_analysis(
     new_unmatched = {r[0] for r in new_rows if r[3] == "DEFAULT"}
     in_lookup = {aid for aid in all_app_ids if aid.lower() in lookup_appids}
 
+    # --- Check route/destination status for lookup appIds hitting default ---
+    # These appIds have containers (in lookup) but are still hitting the
+    # default destination — check if they have routes and destinations
+    # configured in Cribl.
+    # When the capture filter targets the default output (auto or manual),
+    # every captured appId is heading to default. But if the user supplied
+    # a custom filter, we verify via the outputId in captured rows.
+    if default_id:
+        lookup_hitting_default = {
+            aid for aid in all_app_ids
+            if aid.lower() in lookup_appids
+            and any(r[0] == aid and default_id in r[2] for r in all_rows)
+        }
+    else:
+        # No default output known — all lookup appIds in captured data are suspect
+        lookup_hitting_default = {
+            aid for aid in all_app_ids
+            if aid.lower() in lookup_appids
+        }
+    lookup_status_results: list[dict[str, Any]] = []
+    if lookup_hitting_default:
+        log.info(
+            "%d lookup appId(s) are hitting the default destination — "
+            "checking route/destination config",
+            len(lookup_hitting_default),
+        )
+        # Fetch destinations and routes from the first successful client
+        try:
+            all_destinations = clients[0].list_azure_blob_outputs()
+            all_routes = clients[0].list_routes()
+            log.info(
+                "Fetched %d destinations, %d routes for lookup status check",
+                len(all_destinations), len(all_routes),
+            )
+            lookup_status_results = check_lookup_route_dest_status(
+                lookup_hitting_default,
+                all_destinations,
+                all_routes,
+                args.match_mode,
+            )
+        except Exception as exc:
+            log.warning("Could not check route/destination status: %s", exc)
+            print(f"\n  WARNING: Could not check route/destination status: {exc}")
+
     log.info(
-        "appId summary: total=%d, in_csv=%d, in_lookup=%d, new=%d, new_unmatched=%d",
+        "appId summary: total=%d, in_csv=%d, in_lookup=%d, "
+        "lookup_hitting_default=%d, new=%d, new_unmatched=%d",
         len(all_app_ids), len(all_app_ids & known_appids), len(in_lookup),
-        len(new_app_ids), len(new_unmatched),
+        len(lookup_hitting_default), len(new_app_ids), len(new_unmatched),
     )
     print(f"\n  Distinct {args.appid_field} values (total) : {len(all_app_ids)}")
     print(f"  Already known (in previous CSV)          : {len(all_app_ids & known_appids)}")
     if lookup_appids:
         print(f"  In lookup (have container)               : {len(in_lookup)}")
+        if lookup_hitting_default:
+            print(f"  In lookup BUT hitting default            : {len(lookup_hitting_default)}  !!!")
     print(f"  New {args.appid_field} values              : {len(new_app_ids)}")
+
+    # Show lookup status report if any lookup appIds are hitting default
+    if lookup_status_results:
+        print(f"\n[ALERT] Lookup appIds with containers hitting default destination")
+        print(f"These appIds have Azure containers (per lookup table) but are still")
+        print(f"falling through to the default output — checking route/destination config:")
+        _print_lookup_status_table(lookup_status_results)
+
+        # Write lookup status CSV
+        lookup_csv_path = args.output.rsplit(".", 1)[0] + "_lookup_status.csv" \
+            if args.output.endswith(".csv") \
+            else f"lookup_status_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        write_lookup_status_csv(lookup_status_results, lookup_csv_path)
 
     if excluded and not new_app_ids:
         log.info("No new appIds found — all %d excluded (csv=%d, lookup=%d)",
                  len(all_app_ids), len(all_app_ids & known_appids), len(in_lookup))
         print(f"\nNo new {args.appid_field} values found — all {len(all_app_ids)} already accounted for")
+        if lookup_status_results:
+            print(f"  BUT {len(lookup_hitting_default)} lookup appId(s) need route/destination attention (see above)")
         return EXIT_OK
 
     # Print table (new apmIds only)
