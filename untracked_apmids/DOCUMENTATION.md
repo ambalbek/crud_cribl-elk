@@ -37,6 +37,7 @@
 - Identifies appIds routed to the default Azure Blob destination
 - Compares captured appIds against existing dedicated destinations
 - Filters out already-known containers via lookup tables
+- **Audits lookup appIds hitting default** — checks whether they have routes and destinations configured in Cribl, and flags misconfigurations (missing route, missing destination, or both)
 - Tracks new unmatched appIds across runs via CSV diffing
 - Outputs results to CSV, JSON, and/or Elasticsearch
 
@@ -57,17 +58,37 @@ In a Cribl Stream deployment, events from various applications (identified by `a
 - Cost inefficiency — default container may lack optimized retention/tiering policies
 - Operational blind spots — teams don't know their data isn't reaching the intended destination
 
-**This tool solves the problem** by continuously auditing live traffic and surfacing appIds that have no dedicated destination.
+**This tool solves the problem** by continuously auditing live traffic, surfacing appIds that have no dedicated destination, and flagging appIds that have Azure containers provisioned but are missing the Cribl route and/or destination needed to actually use them.
 
 ---
 
 ## 3. Architecture
 
+### Package Structure
+
+```
+cribl_audit/
+  __init__.py       Public API exports
+  __main__.py       python -m cribl_audit entry point
+  cli.py            Argparse, config merging, main()
+  config.py         JSON config + .env file loading
+  constants.py      Timeouts, exit codes, URLs
+  exceptions.py     CriblAPIError, AuthenticationError
+  http.py           Session factory with retry logic
+  auth.py           CriblAuth (OAuth2, leader login, static token)
+  client.py         CriblClient (outputs, routes, capture)
+  matching.py       match_appid_to_dest + route/dest audit
+  lookup.py         Lookup table loading + CSV diff
+  output.py         CSV, JSON, lookup_status writers + tables
+  elasticsearch.py  ElasticsearchClient (bulk indexing)
+  analysis.py       run_inspect, run_dry_run, run_analysis
+```
+
 ### High-Level Architecture
 
 ```
 +-------------------------------------------------------------------+
-|                        CLI / Config / Env                          |
+|                    cli.py  (CLI / Config / Env)                    |
 +-------------------------------------------------------------------+
                               |
                     +---------v----------+
@@ -110,6 +131,13 @@ In a Cribl Stream deployment, events from various applications (identified by `a
             |   previous CSV)    |
             +---------+----------+
                       |
+            +---------v----------+
+            | Lookup Route/Dest  |
+            | Audit              |
+            | (GET /routes,      |
+            |  check config)     |
+            +---------+----------+
+                      |
         +-------------+-------------+
         |             |             |
    +----v----+  +----v----+  +-----v------+
@@ -122,11 +150,12 @@ In a Cribl Stream deployment, events from various applications (identified by `a
 
 | Decision | Rationale |
 |----------|-----------|
-| Single-file architecture | Zero deployment complexity — copy one file + `pip install requests` |
+| Modular package (14 files) | Each module is 20-200 lines — easy to read, test, and extend independently |
 | Read-only API usage | Safety — tool can be run by anyone without risk of config corruption |
 | Thread-based parallelism | Worker groups are I/O-bound (network calls) — threads are sufficient |
 | Three-tier config resolution | Flexibility — supports CI/CD (env vars), interactive use (config file), and ad-hoc overrides (CLI) |
 | CSV diff across runs | Enables incremental alerting — only new untracked appIds trigger notifications |
+| Lookup route/dest audit | Catches appIds with containers that are misconfigured in Cribl (missing route and/or destination) |
 
 ---
 
@@ -156,6 +185,7 @@ In a Cribl Stream deployment, events from various applications (identified by `a
 |----------|--------|---------|
 | `/api/v1/m/{group}/system/outputs` | GET | List all configured destinations |
 | `/api/v1/m/{group}/system/capture` | POST | Live event capture (transient, no persistence) |
+| `/api/v1/m/{group}/routes` | GET | List all configured routes (for lookup audit) |
 
 **Timeouts:**
 - Connect: 10 seconds
@@ -210,6 +240,41 @@ If no match is found, the appId is marked as `DEFAULT` (unmatched).
 | `load_lookup_appids()` | `APP_*.json` file | Excludes appIds listed in `azure_storage_account_containers` |
 | `load_previous_unmatched()` | Previous CSV file | Excludes appIds already reported in prior runs |
 | `find_latest_csv()` | Output directory | Auto-detects most recent CSV for comparison |
+
+### 4.6 Lookup Route/Destination Audit
+
+**Purpose:** For appIds that have Azure containers (per lookup table) but are still hitting the default destination, verifies whether routes and destinations are actually configured in Cribl.
+
+**Problem this solves:** An appId can have an Azure container provisioned (listed in the lookup table) yet still land in the default output because:
+- The Cribl destination pointing to that container was never created
+- The Cribl route to direct traffic to that destination was never created
+- Both are missing
+
+**How matching works:**
+
+Destination is matched if any of these are true (case-insensitive):
+1. `containerName` matches the appId (via configured match mode: exact/contains/partition)
+2. Destination `id` contains the appId (e.g. `azure_blob:prod-my-app` matches `my-app`)
+3. Destination `name` contains the appId
+
+Route is matched if any of these are true (case-insensitive):
+1. Route `name` contains the appId (e.g. `prod-my-app-route` matches `my-app`)
+2. Route `id` contains the appId
+3. Route `filter` expression contains the appId
+4. Route `output` points to the appId's matched destination
+
+**Status categories:**
+
+| Status | Meaning | Action Needed |
+|--------|---------|---------------|
+| `CONFIGURED` | Has both route and destination | Investigate why traffic still hits default (disabled route? filter mismatch?) |
+| `MISSING ROUTE` | Destination exists but no route | Create a route to direct traffic to the destination |
+| `MISSING DESTINATION` | Route exists but no destination | Create an azure_blob destination for the container |
+| `MISSING BOTH` | Neither route nor destination | Create both route and destination |
+
+**Output:**
+- Console table with `<<<` markers for misconfigured appIds
+- Separate CSV file: `*_lookup_status.csv` with columns: `apmId`, `has_destination`, `destination_id`, `has_route`, `route_id`, `route_output`, `status`
 
 ---
 
@@ -287,8 +352,15 @@ After all rounds:
 ```
   11. Merge results from all worker groups
   12. Load lookup table → exclude known containers
-  13. Load previous CSV → exclude already-reported appIds
-  14. Output NEW unmatched appIds to CSV/JSON/Elasticsearch
+  13. Identify lookup appIds still hitting default
+      a. GET /api/v1/m/{group}/routes
+      b. For each lookup appId hitting default:
+         - Check if destination exists (containerName, dest id/name)
+         - Check if route exists (route name/id, filter, output)
+         - Categorize: CONFIGURED / MISSING ROUTE / MISSING DEST / MISSING BOTH
+      c. Print [ALERT] table + write *_lookup_status.csv
+  14. Load previous CSV → exclude already-reported appIds
+  15. Output NEW unmatched appIds to CSV/JSON/Elasticsearch
 ```
 
 ---
@@ -421,6 +493,23 @@ An appId appears in the final output only if **all** conditions are true:
 - Bulk API for efficient indexing
 - Supports API key or basic auth
 
+### Lookup Status CSV
+
+When lookup appIds are detected hitting the default destination, an additional CSV is written:
+
+- Filename: `*_lookup_status.csv`
+- Columns:
+
+| Column | Description |
+|--------|-------------|
+| `apmId` | The application ID from the lookup table |
+| `has_destination` | Whether a matching Cribl destination exists (`True`/`False`) |
+| `destination_id` | The matched destination ID, or `NONE` |
+| `has_route` | Whether a matching Cribl route exists (`True`/`False`) |
+| `route_id` | The matched route ID, or `NONE` |
+| `route_output` | The route's configured output destination, or `NONE` |
+| `status` | One of: `CONFIGURED`, `MISSING ROUTE`, `MISSING DESTINATION`, `MISSING BOTH` |
+
 ---
 
 ## 11. Deduplication & Diff Logic
@@ -441,6 +530,17 @@ When a previous CSV exists (auto-detected or specified via `--diff-csv`):
 - AppIds already in the previous CSV are excluded from the new output
 - Only **newly discovered** unmatched appIds are reported
 - This enables incremental alerting workflows
+
+### Lookup Route/Destination Audit
+
+When lookup appIds are excluded from the main output (they have containers), they are **not silently ignored**. If any of these appIds are still hitting the default destination, the tool:
+
+1. Fetches all routes via `GET /api/v1/m/{group}/routes`
+2. Checks each lookup appId for a matching destination (by containerName, dest ID, or dest name)
+3. Checks each lookup appId for a matching route (by route name, route ID, filter, or output)
+4. Reports the status as an `[ALERT]` table and writes `*_lookup_status.csv`
+
+This catches the scenario where an Azure container is provisioned but the Cribl configuration to actually route data there is incomplete.
 
 ### Append Mode
 
@@ -493,7 +593,7 @@ With `--append`, new results are appended to an existing CSV. Existing rows are 
 
 ### Read-Only Design
 
-- Only uses `GET` for listing destinations
+- Only uses `GET` for listing destinations and routes
 - `POST /system/capture` is transient — no data is written to Cribl
 - No mutations to Cribl configuration, routes, or pipelines
 
@@ -516,8 +616,8 @@ With `--append`, new results are appended to an existing CSV. Existing rows are 
 ### Installation
 
 ```bash
-# Copy the script and config template
-cp find_default_appids.py /opt/cribl-audit/
+# Copy the package and config template
+cp -r cribl_audit/ /opt/cribl-audit/cribl_audit/
 cp config.example.json /opt/cribl-audit/config.json
 chmod 600 /opt/cribl-audit/config.json
 
@@ -529,16 +629,16 @@ pip install requests
 
 ```bash
 # Step 1: Validate configuration
-python find_default_appids.py --config config.json --dry-run
+python -m cribl_audit --config config.json --dry-run
 
 # Step 2: Discover field names and topology
-python find_default_appids.py --config config.json --inspect
+python -m cribl_audit --config config.json --inspect
 
 # Step 3: Run analysis
-python find_default_appids.py --config config.json
+python -m cribl_audit --config config.json
 
 # Step 4: Schedule recurring runs (e.g., daily via cron)
-# 0 6 * * * /usr/bin/python3 /opt/cribl-audit/find_default_appids.py --config /opt/cribl-audit/config.json --append
+# 0 6 * * * cd /opt/cribl-audit && /usr/bin/python3 -m cribl_audit --config config.json --append
 ```
 
 ### Monitoring
@@ -578,4 +678,5 @@ python find_default_appids.py --config config.json
 | `POST /oauth/token` | POST | Cribl Cloud OAuth2 token exchange |
 | `POST /api/v1/auth/login` | POST | Self-managed leader authentication |
 | `GET /api/v1/m/{group}/system/outputs` | GET | List all configured destinations |
+| `GET /api/v1/m/{group}/routes` | GET | List all configured routes |
 | `POST /api/v1/m/{group}/system/capture` | POST | Live event capture (transient) |

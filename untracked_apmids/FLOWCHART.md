@@ -52,7 +52,12 @@ flowchart TD
     JN --> K
 
     K --> L[Load Lookup Table]
-    L --> M[Load Previous CSV]
+    L --> LA{Lookup appIds<br/>hitting default?}
+    LA -->|Yes| LB[GET /routes]
+    LB --> LC[Check route + dest<br/>for each lookup appId]
+    LC --> LD[Print ALERT table<br/>Write lookup_status.csv]
+    LD --> M[Load Previous CSV]
+    LA -->|No| M
     M --> N{New unmatched<br/>appIds found?}
 
     N -->|Yes| O[Output Results]
@@ -69,6 +74,8 @@ flowchart TD
     style D7 fill:#f44336,color:#fff
     style F3 fill:#2196F3,color:#fff
     style G4 fill:#2196F3,color:#fff
+    style LB fill:#FF5722,color:#fff
+    style LD fill:#FF5722,color:#fff
     style P fill:#FF9800,color:#fff
     style Q fill:#4CAF50,color:#fff
 ```
@@ -180,8 +187,21 @@ flowchart TD
     G -->|No| I[Untracked: appId -> DEFAULT]
 
     I --> J{In lookup table?<br/>azure_storage_account_containers}
-    J -->|Yes| K[Exclude: already provisioned]
+    J -->|Yes| K[Route/Dest Audit]
     J -->|No| L{In previous CSV?}
+
+    K --> K1[GET /routes]
+    K1 --> K2{Dest exists?<br/>containerName / ID / name}
+    K2 -->|Yes| K3{Route exists?<br/>name / ID / filter / output}
+    K2 -->|No| K4{Route exists?}
+    K3 -->|Yes| K5[CONFIGURED]
+    K3 -->|No| K6[MISSING ROUTE]
+    K4 -->|Yes| K7[MISSING DESTINATION]
+    K4 -->|No| K8[MISSING BOTH]
+    K5 --> K9[Write lookup_status.csv]
+    K6 --> K9
+    K7 --> K9
+    K8 --> K9
 
     L -->|Yes| M[Exclude: already reported]
     L -->|No| N[NEW untracked appId]
@@ -190,7 +210,11 @@ flowchart TD
 
     style A fill:#2196F3,color:#fff
     style H fill:#4CAF50,color:#fff
-    style K fill:#FF9800,color:#fff
+    style K fill:#FF5722,color:#fff
+    style K5 fill:#4CAF50,color:#fff
+    style K6 fill:#f44336,color:#fff
+    style K7 fill:#f44336,color:#fff
+    style K8 fill:#f44336,color:#fff
     style M fill:#FF9800,color:#fff
     style N fill:#f44336,color:#fff
     style O fill:#9C27B0,color:#fff
@@ -198,7 +222,37 @@ flowchart TD
 
 ---
 
-## 5. Error Handling & Exit Codes
+## 5. Package Architecture
+
+```mermaid
+flowchart LR
+    CLI[cli.py<br/>Entry point + argparse] --> CONFIG[config.py<br/>JSON + .env loading]
+    CLI --> AUTH[auth.py<br/>OAuth2 / Login / Token]
+    CLI --> ANALYSIS[analysis.py<br/>inspect / dry-run / full]
+
+    ANALYSIS --> CLIENT[client.py<br/>Cribl REST API]
+    ANALYSIS --> MATCHING[matching.py<br/>Matching engine + audit]
+    ANALYSIS --> LOOKUP[lookup.py<br/>Lookup table + CSV diff]
+    ANALYSIS --> OUTPUT[output.py<br/>CSV / JSON / tables]
+    ANALYSIS --> ES[elasticsearch.py<br/>Bulk indexing]
+
+    CLIENT --> AUTH
+    CLIENT --> HTTP[http.py<br/>Session + retry]
+    AUTH --> HTTP
+    ES --> HTTP
+
+    HTTP --> CONST[constants.py<br/>Timeouts / exit codes]
+    HTTP --> EXCEPT[exceptions.py<br/>Error types]
+
+    style CLI fill:#2196F3,color:#fff
+    style ANALYSIS fill:#9C27B0,color:#fff
+    style MATCHING fill:#FF5722,color:#fff
+    style CONST fill:#607D8B,color:#fff
+```
+
+---
+
+## 6. Error Handling & Exit Codes
 
 ```mermaid
 flowchart TD
