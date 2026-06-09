@@ -3,15 +3,12 @@
 Get all unique apmId/appName from ELK, compare with Cribl azure_blob
 destinations and routes, and index results back into ELK.
 
-Same matching logic as find_default_appids.py but sources apmIds from
-ELK (logs-k8s-container-all*) instead of Cribl live capture.
-
-All configuration comes from config.json (--config).
+Uses the cribl_audit module for Cribl API access (same as find_default_appids.py).
 
 Flow:
   1. Query source ELK for all unique apmId + appName
   2. Fetch azure_blob destinations + routes from Cribl API
-  3. Match apmIds to destinations/routes (exact/contains/partition)
+  3. Match: apmId in containerName (destination), apmId in route name (route)
   4. Index results into result ELK
 
 Usage:
@@ -24,15 +21,17 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
-import threading
-import time
 from datetime import datetime, timezone
 from typing import Any
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+from cribl_audit.auth import CriblAuth
+from cribl_audit.client import CriblClient
+from cribl_audit.config import load_config as load_cribl_config
+from cribl_audit.http import build_session as build_cribl_session
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -40,18 +39,16 @@ from urllib3.util.retry import Retry
 
 DEFAULT_SOURCE_INDEX = "logs-k8s-container-all*"
 DEFAULT_RESULT_INDEX = "cribl-untracked-appids"
-CRIBL_CLOUD_LOGIN_URL = "https://login.cribl.cloud/oauth/token"
-CRIBL_CLOUD_AUDIENCE = "https://api.cribl.cloud"
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 30
 
 
 # ---------------------------------------------------------------------------
-# Config file loader
+# Config
 # ---------------------------------------------------------------------------
 
 def load_config(path: str) -> dict[str, Any]:
-    """Load config.json and return the raw dict."""
+    """Load config.json raw dict + push auth/es creds to env via cribl_audit."""
     try:
         with open(path, encoding="utf-8") as fh:
             raw = json.load(fh)
@@ -62,11 +59,15 @@ def load_config(path: str) -> dict[str, Any]:
 
     if not isinstance(raw, dict):
         sys.exit(f"ERROR: config file must be a JSON object, got {type(raw).__name__}")
+
+    # Use cribl_audit's loader to push auth creds into os.environ
+    load_cribl_config(path)
+
     return raw
 
 
 # ---------------------------------------------------------------------------
-# HTTP sessions
+# ES session
 # ---------------------------------------------------------------------------
 
 def build_es_session(
@@ -86,134 +87,6 @@ def build_es_session(
     elif username and password:
         s.auth = (username, password)
     return s
-
-
-def build_cribl_session(verify_ssl: bool = True) -> requests.Session:
-    s = requests.Session()
-    s.verify = verify_ssl
-    if not verify_ssl:
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504],
-                    allowed_methods=["GET", "POST"], raise_on_status=False)
-    adapter = HTTPAdapter(max_retries=retries)
-    s.mount("https://", adapter)
-    s.mount("http://", adapter)
-    return s
-
-
-# ---------------------------------------------------------------------------
-# Cribl Auth
-# ---------------------------------------------------------------------------
-
-class CriblAuth:
-    def __init__(self, cribl_url: str, session: requests.Session, creds: dict[str, str]) -> None:
-        self._cribl_url = cribl_url.rstrip("/")
-        self._session = session
-        self._creds = creds
-        self._token: str | None = None
-        self._expires_at: float = 0.0
-        self._lock = threading.Lock()
-
-    @property
-    def token(self) -> str:
-        with self._lock:
-            if self._token and time.time() < self._expires_at:
-                return self._token
-            self._authenticate()
-            if not self._token:
-                raise RuntimeError("Authentication succeeded but no token was returned.")
-            return self._token
-
-    def _authenticate(self) -> None:
-        client_id = self._creds.get("client_id", "").strip()
-        client_secret = self._creds.get("client_secret", "").strip()
-        username = self._creds.get("username", "").strip()
-        password = self._creds.get("password", "").strip()
-        static_token = self._creds.get("token", "").strip()
-
-        if client_id and client_secret:
-            resp = self._session.post(
-                CRIBL_CLOUD_LOGIN_URL,
-                json={
-                    "grant_type": "client_credentials",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "audience": CRIBL_CLOUD_AUDIENCE,
-                },
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-            )
-            if resp.status_code >= 400:
-                sys.exit(f"ERROR: Cribl OAuth failed: HTTP {resp.status_code}: {resp.text[:500]}")
-            data = resp.json()
-            self._token = data["access_token"]
-            self._expires_at = time.time() + data.get("expires_in", 3600) - 60
-
-        elif username and password:
-            url = f"{self._cribl_url}/api/v1/auth/login"
-            resp = self._session.post(
-                url, json={"username": username, "password": password},
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-            )
-            if resp.status_code >= 400:
-                sys.exit(f"ERROR: Cribl login failed: HTTP {resp.status_code}: {resp.text[:500]}")
-            data = resp.json()
-            self._token = data.get("token") or data.get("access_token")
-            self._expires_at = time.time() + 3600
-
-        elif static_token:
-            self._token = static_token
-            self._expires_at = time.time() + 86400
-
-        else:
-            sys.exit(
-                "ERROR: No Cribl credentials in config.json auth section. "
-                "Provide client_id+client_secret, username+password, or token."
-            )
-
-
-# ---------------------------------------------------------------------------
-# Cribl API client (read-only)
-# ---------------------------------------------------------------------------
-
-class CriblClient:
-    def __init__(self, cribl_url: str, group: str, auth: CriblAuth, session: requests.Session) -> None:
-        self._base = f"{cribl_url.rstrip('/')}/api/v1/m/{group}"
-        self._group = group
-        self._auth = auth
-        self._session = session
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._auth.token}",
-            "Content-Type": "application/json",
-            "Accept": "application/x-ndjson, application/json",
-        }
-
-    def list_outputs(self) -> list[dict[str, Any]]:
-        url = f"{self._base}/system/outputs"
-        resp = self._session.get(url, headers=self._headers(), timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
-        if resp.status_code >= 400:
-            sys.exit(f"ERROR: Cribl outputs API: HTTP {resp.status_code}: {resp.text[:500]}")
-        data = resp.json()
-        return data.get("items", data) if isinstance(data, dict) else data
-
-    def list_azure_blob_outputs(self) -> list[dict[str, Any]]:
-        return [o for o in self.list_outputs() if o.get("type") == "azure_blob"]
-
-    def list_routes(self) -> list[dict[str, Any]]:
-        url = f"{self._base}/routes"
-        resp = self._session.get(url, headers=self._headers(), timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
-        if resp.status_code >= 400:
-            sys.exit(f"ERROR: Cribl routes API: HTTP {resp.status_code}: {resp.text[:500]}")
-        data = resp.json()
-        if isinstance(data, dict):
-            routes = data.get("items") or data.get("routes") or []
-            if not routes and "groups" in data:
-                for g in data["groups"].values():
-                    routes.extend(g.get("routes", []))
-            return routes
-        return data
 
 
 # ---------------------------------------------------------------------------
@@ -254,20 +127,13 @@ def fetch_all_apmids(session: requests.Session, es_url: str, source_index: str, 
 
         data = resp.json()
 
-        # Debug: print full response on first request if no aggregations
         if "aggregations" not in data:
             print(f"\nERROR: ES response has no 'aggregations' key.", file=sys.stderr)
             print(f"  URL: {url}", file=sys.stderr)
-            print(f"  Response keys: {list(data.keys())}", file=sys.stderr)
             if "error" in data:
                 print(f"  Error: {json.dumps(data['error'], indent=2)[:2000]}", file=sys.stderr)
             else:
-                print(f"  Full response: {json.dumps(data, indent=2)[:2000]}", file=sys.stderr)
-            print(f"\n  Possible fixes:", file=sys.stderr)
-            print(f"    - Check that index '{source_index}' exists", file=sys.stderr)
-            print(f"    - Check field names: apmId.keyword / appName.keyword", file=sys.stderr)
-            print(f"    - Try without .keyword: apmId / appName", file=sys.stderr)
-            print(f"    - Verify index mapping: GET {source_index}/_mapping/field/apmId", file=sys.stderr)
+                print(f"  Response: {json.dumps(data, indent=2)[:2000]}", file=sys.stderr)
             sys.exit(1)
 
         buckets = data["aggregations"]["unique_pairs"]["buckets"]
@@ -299,7 +165,7 @@ def dedup_by_apmid(results: list[dict]) -> list[dict]:
 
 # ---------------------------------------------------------------------------
 # Step 3: Matching
-#   Destination: containerName == apmId (exact, case-insensitive)
+#   Destination: apmId appears in containerName (substring, case-insensitive)
 #   Route:       apmId appears in route name (substring, case-insensitive)
 # ---------------------------------------------------------------------------
 
@@ -308,11 +174,7 @@ def check_route_dest_status(
     destinations: list[dict[str, Any]],
     routes: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Check each apmId against Cribl blob containers and routes.
-
-    Destination match: containerName == apmId (exact, case-insensitive)
-    Route match:       apmId is a substring of route name (case-insensitive)
-    """
+    """Check each apmId against Cribl blob containers and routes."""
     results = []
     for row in sorted(apmids, key=lambda r: r["apmId"]):
         app_id = row["apmId"]
@@ -467,18 +329,17 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Print debug info")
     args = parser.parse_args()
 
-    # Load config
+    # Load config (also pushes auth creds to os.environ for cribl_audit)
     cfg = load_config(args.config)
 
-    # --- Parse all settings from config.json ---
-
-    # Cribl auth
+    # Cribl
     auth_cfg = cfg.get("auth", {})
     cribl_url = auth_cfg.get("cribl_url", "").strip().rstrip("/")
     if not cribl_url:
+        cribl_url = os.environ.get("CRIBL_URL", "").strip().rstrip("/")
+    if not cribl_url:
         sys.exit("ERROR: auth.cribl_url is required in config.json")
 
-    # Cribl capture (group)
     capture_cfg = cfg.get("capture", {})
     groups = capture_cfg.get("groups", ["default"])
     group = groups[0] if isinstance(groups, list) and groups else "default"
@@ -525,22 +386,13 @@ def main():
         print(f"\n  DEBUG: First 10 raw pairs from ELK:")
         for i, p in enumerate(raw_pairs[:10]):
             print(f"    [{i}] apmId={p['apmId']!r}  appName={p['appName']!r}  count={p['_doc_count']}")
-        if len(raw_pairs) > 10:
-            print(f"    ... and {len(raw_pairs) - 10} more")
 
     apmids = dedup_by_apmid(raw_pairs)
     print(f"  After dedup: {len(apmids)} unique apmIds")
 
-    if args.debug:
-        print(f"\n  DEBUG: First 10 deduped apmIds:")
-        for i, a in enumerate(apmids[:10]):
-            print(f"    [{i}] apmId={a['apmId']!r}  appName={a['appName']!r}")
-        if len(apmids) > 10:
-            print(f"    ... and {len(apmids) - 10} more")
-
-    # --- Step 2: Get Cribl destinations + routes ---
+    # --- Step 2: Get Cribl destinations + routes (via cribl_audit module) ---
     print(f"\n[2/4] Fetching Cribl destinations & routes (group={group})...")
-    auth = CriblAuth(cribl_url, cribl_session, auth_cfg)
+    auth = CriblAuth(cribl_url, cribl_session)
     client = CriblClient(cribl_url, group, auth, cribl_session)
 
     destinations = client.list_azure_blob_outputs()
@@ -551,11 +403,9 @@ def main():
     routes = client.list_routes()
     print(f"  Found {len(routes)} route(s)")
     if args.debug:
-        print(f"\n  DEBUG: Routes returned:")
+        print(f"\n  DEBUG: First 20 routes:")
         for i, r in enumerate(routes[:20]):
             print(f"    [{i}] id={r.get('id', '?')!r}  name={r.get('name', '?')!r}")
-        if len(routes) > 20:
-            print(f"    ... and {len(routes) - 20} more")
 
     # --- Step 3: Compare ---
     print(f"\n[3/4] Matching apmIds to destinations/routes...")
