@@ -228,8 +228,8 @@ def fetch_all_apmids(session: requests.Session, es_url: str, source_index: str, 
 
     while True:
         sources = [
-            {"apmId": {"terms": {"field": "apmId.keyword", "missing_bucket": True}}},
-            {"appName": {"terms": {"field": "appName.keyword", "missing_bucket": True}}},
+            {"apmId": {"terms": {"field": "apmId"}}},
+            {"appName": {"terms": {"field": "appName", "missing_bucket": True}}},
         ]
         composite = {"size": 1000, "sources": sources}
         if after:
@@ -313,21 +313,19 @@ def check_route_dest_status(
     Destination match: containerName == apmId (exact, case-insensitive)
     Route match:       apmId is a substring of route name (case-insensitive)
     """
-    # Pre-build container lookup: containerName (lowered) -> dest id
-    container_map: dict[str, str] = {}
-    for dest in destinations:
-        container = (dest.get("containerName") or "").strip().lower()
-        if container:
-            container_map[container] = dest.get("id", "?")
-
     results = []
     for row in sorted(apmids, key=lambda r: r["apmId"]):
         app_id = row["apmId"]
         app_name = row["appName"]
         app_lower = app_id.lower()
 
-        # Destination: exact match containerName == apmId
-        dest_id = container_map.get(app_lower)
+        # Destination: apmId appears in containerName
+        dest_id = None
+        for dest in destinations:
+            container = (dest.get("containerName") or "").lower()
+            if app_lower in container:
+                dest_id = dest.get("id", "?")
+                break
 
         # Route: apmId appears in route name
         route_match_id = None
