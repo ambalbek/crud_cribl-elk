@@ -347,36 +347,18 @@ def check_route_dest_status(
         app_name = row["appName"]
         app_lower = app_id.lower()
 
-        # Match destination: first by containerName, then fallback to id/name
+        # Match destination by containerName only (reliable match)
         dest_id = match_appid_to_dest(app_id, destinations, match_mode)
-        if dest_id is None:
-            for dest in destinations:
-                did = (dest.get("id") or "").lower()
-                dname = (dest.get("name") or "").lower()
-                if app_lower in did or app_lower in dname:
-                    dest_id = dest.get("id", "?")
-                    break
 
-        # Match route: check name/id, filter, or output pointing to matched dest
+        # Match route: check if apmId appears in route name/id
         route_match_id = None
         route_match_output = None
         for route in routes:
-            route_filter = str(route.get("filter", ""))
             route_name = str(route.get("name", ""))
             route_output = route.get("output", "")
             route_id = route.get("id", route_name)
 
             if app_lower in route_name.lower() or app_lower in str(route_id).lower():
-                route_match_id = route_id
-                route_match_output = route_output
-                break
-
-            if app_lower in route_filter.lower():
-                route_match_id = route_id
-                route_match_output = route_output
-                break
-
-            if route_output and dest_id and route_output == dest_id:
                 route_match_id = route_id
                 route_match_output = route_output
                 break
