@@ -298,69 +298,43 @@ def dedup_by_apmid(results: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Matching (same logic as find_default_appids.py)
+# Step 3: Matching
+#   Destination: containerName == apmId (exact, case-insensitive)
+#   Route:       apmId appears in route name (substring, case-insensitive)
 # ---------------------------------------------------------------------------
-
-def match_appid_to_dest(
-    app_id: str,
-    destinations: list[dict[str, Any]],
-    match_mode: str,
-) -> str | None:
-    """Return the first destination id whose containerName matches.
-
-    exact      containerName == appId  (case-insensitive)
-    contains   appId must appear in containerName  (one-directional)
-    partition  containerName exact OR appId in partitionExpr
-    """
-    app_lower = app_id.lower()
-    for dest in destinations:
-        container = (dest.get("containerName") or "").lower()
-        part_expr = dest.get("partitionExpr") or ""
-        dest_id = dest.get("id", "?")
-
-        if match_mode == "exact":
-            if container == app_lower:
-                return dest_id
-        elif match_mode == "contains":
-            if app_lower in container:
-                return dest_id
-        elif match_mode == "partition":
-            if container == app_lower or app_id in part_expr:
-                return dest_id
-    return None
-
 
 def check_route_dest_status(
     apmids: list[dict],
     destinations: list[dict[str, Any]],
     routes: list[dict[str, Any]],
-    match_mode: str,
 ) -> list[dict[str, Any]]:
-    """Check whether each apmId has a matching destination and route in Cribl.
+    """Check each apmId against Cribl blob containers and routes.
 
-    Returns a list of dicts:
-      {apmId, appName, has_destination, destination_id, has_route, route_id, route_output, status}
+    Destination match: containerName == apmId (exact, case-insensitive)
+    Route match:       apmId is a substring of route name (case-insensitive)
     """
+    # Pre-build container lookup: containerName (lowered) -> dest id
+    container_map: dict[str, str] = {}
+    for dest in destinations:
+        container = (dest.get("containerName") or "").strip().lower()
+        if container:
+            container_map[container] = dest.get("id", "?")
+
     results = []
     for row in sorted(apmids, key=lambda r: r["apmId"]):
         app_id = row["apmId"]
         app_name = row["appName"]
         app_lower = app_id.lower()
 
-        # Match destination by containerName only (reliable match)
-        dest_id = match_appid_to_dest(app_id, destinations, match_mode)
+        # Destination: exact match containerName == apmId
+        dest_id = container_map.get(app_lower)
 
-        # Match route: check if apmId appears in route name/id
+        # Route: apmId appears in route name
         route_match_id = None
-        route_match_output = None
         for route in routes:
-            route_name = str(route.get("name", ""))
-            route_output = route.get("output", "")
-            route_id = route.get("id", route_name)
-
-            if app_lower in route_name.lower() or app_lower in str(route_id).lower():
-                route_match_id = route_id
-                route_match_output = route_output
+            route_name = str(route.get("name", "")).lower()
+            if app_lower in route_name:
+                route_match_id = route.get("id", route.get("name", "?"))
                 break
 
         has_dest = dest_id is not None
@@ -382,7 +356,6 @@ def check_route_dest_status(
             "destination_id": dest_id or "NONE",
             "has_route": has_route,
             "route_id": route_match_id or "NONE",
-            "route_output": route_match_output or "NONE",
             "status": status,
         })
 
@@ -413,7 +386,6 @@ def index_to_elk(session: requests.Session, es_url: str, index: str, rows: list[
             "destination_id": row["destination_id"],
             "has_route": row["has_route"],
             "route_id": row["route_id"],
-            "route_output": row["route_output"],
             "status": row["status"],
             "is_unmatched": row["status"] != "CONFIGURED",
         })
@@ -494,6 +466,7 @@ def main():
     parser.add_argument("--config", required=True, help="Path to config.json")
     parser.add_argument("--days", type=int, default=30, help="Look back N days (default: 30)")
     parser.add_argument("--output", "-o", help="Also save CSV to file")
+    parser.add_argument("--debug", action="store_true", help="Print debug info")
     args = parser.parse_args()
 
     # Load config
@@ -511,10 +484,6 @@ def main():
     capture_cfg = cfg.get("capture", {})
     groups = capture_cfg.get("groups", ["default"])
     group = groups[0] if isinstance(groups, list) and groups else "default"
-
-    # Matching
-    matching_cfg = cfg.get("matching", {})
-    match_mode = matching_cfg.get("mode", "contains")
 
     # Source ELK (where to READ apmIds)
     src_es_cfg = cfg.get("source_elasticsearch", {})
@@ -554,8 +523,22 @@ def main():
     raw_pairs = fetch_all_apmids(source_es_session, source_es_url, source_index, args.days)
     print(f"  Found {len(raw_pairs)} unique apmId/appName pairs")
 
+    if args.debug:
+        print(f"\n  DEBUG: First 10 raw pairs from ELK:")
+        for i, p in enumerate(raw_pairs[:10]):
+            print(f"    [{i}] apmId={p['apmId']!r}  appName={p['appName']!r}  count={p['_doc_count']}")
+        if len(raw_pairs) > 10:
+            print(f"    ... and {len(raw_pairs) - 10} more")
+
     apmids = dedup_by_apmid(raw_pairs)
     print(f"  After dedup: {len(apmids)} unique apmIds")
+
+    if args.debug:
+        print(f"\n  DEBUG: First 10 deduped apmIds:")
+        for i, a in enumerate(apmids[:10]):
+            print(f"    [{i}] apmId={a['apmId']!r}  appName={a['appName']!r}")
+        if len(apmids) > 10:
+            print(f"    ... and {len(apmids) - 10} more")
 
     # --- Step 2: Get Cribl destinations + routes ---
     print(f"\n[2/4] Fetching Cribl destinations & routes (group={group})...")
@@ -571,8 +554,8 @@ def main():
     print(f"  Found {len(routes)} route(s)")
 
     # --- Step 3: Compare ---
-    print(f"\n[3/4] Matching apmIds to destinations/routes (mode={match_mode})...")
-    results = check_route_dest_status(apmids, destinations, routes, match_mode)
+    print(f"\n[3/4] Matching apmIds to destinations/routes...")
+    results = check_route_dest_status(apmids, destinations, routes)
     print_status_table(results)
 
     # --- Step 4: Index results to result ELK ---
@@ -583,7 +566,7 @@ def main():
     # Optional CSV output
     if args.output:
         fieldnames = ["apmId", "appName", "has_destination", "destination_id",
-                       "has_route", "route_id", "route_output", "status"]
+                       "has_route", "route_id", "status"]
         with open(args.output, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
