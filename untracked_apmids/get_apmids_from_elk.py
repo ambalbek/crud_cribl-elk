@@ -550,6 +550,12 @@ def main():
 
     routes = client.list_routes()
     print(f"  Found {len(routes)} route(s)")
+    if args.debug:
+        print(f"\n  DEBUG: Routes returned:")
+        for i, r in enumerate(routes[:20]):
+            print(f"    [{i}] id={r.get('id', '?')!r}  name={r.get('name', '?')!r}")
+        if len(routes) > 20:
+            print(f"    ... and {len(routes) - 20} more")
 
     # --- Step 3: Compare ---
     print(f"\n[3/4] Matching apmIds to destinations/routes...")
