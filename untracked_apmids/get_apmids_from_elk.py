@@ -6,20 +6,17 @@ destinations and routes, and index results back into ELK.
 Same matching logic as find_default_appids.py but sources apmIds from
 ELK (logs-k8s-container-all*) instead of Cribl live capture.
 
+All configuration comes from config.json (--config).
+
 Flow:
-  1. Query logs-k8s-container-all* for all unique apmId + appName
+  1. Query source ELK for all unique apmId + appName
   2. Fetch azure_blob destinations + routes from Cribl API
   3. Match apmIds to destinations/routes (exact/contains/partition)
-  4. Index results into ELK (e.g. cribl-untracked-appids)
+  4. Index results into result ELK
 
 Usage:
-  python get_apmids_from_elk.py --es-url https://es:9200 --cribl-url https://main-org.cribl.cloud --group default
-
-Auth via env vars:
-  ES_API_KEY / ES_USERNAME+ES_PASSWORD   — Elasticsearch auth
-  CRIBL_CLIENT_ID + CRIBL_CLIENT_SECRET  — Cribl Cloud OAuth2
-  CRIBL_USERNAME  + CRIBL_PASSWORD       — Cribl self-managed
-  CRIBL_TOKEN                            — Pre-existing bearer token
+  python get_apmids_from_elk.py --config config.json
+  python get_apmids_from_elk.py --config config.json --days 7 -o results.csv
 """
 
 from __future__ import annotations
@@ -27,8 +24,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
-import stat
 import sys
 import threading
 import time
@@ -43,7 +38,7 @@ from urllib3.util.retry import Retry
 # Constants
 # ---------------------------------------------------------------------------
 
-SOURCE_INDEX = "logs-k8s-container-all*"
+DEFAULT_SOURCE_INDEX = "logs-k8s-container-all*"
 DEFAULT_RESULT_INDEX = "cribl-untracked-appids"
 CRIBL_CLOUD_LOGIN_URL = "https://login.cribl.cloud/oauth/token"
 CRIBL_CLOUD_AUDIENCE = "https://api.cribl.cloud"
@@ -52,57 +47,11 @@ READ_TIMEOUT = 30
 
 
 # ---------------------------------------------------------------------------
-# .env file loader (same as find_default_appids.py)
-# ---------------------------------------------------------------------------
-
-def load_env_file(path: str) -> None:
-    """Load KEY=VALUE pairs from a file into os.environ.
-
-    Supports blank lines, # comments, optional quotes, export prefix.
-    Does NOT override variables already set in the environment.
-    """
-    try:
-        if hasattr(os, "stat"):
-            try:
-                mode = os.stat(path).st_mode
-                if mode & stat.S_IROTH:
-                    print(f"WARNING: env file {path} is world-readable (mode {stat.S_IMODE(mode):o})",
-                          file=sys.stderr)
-            except OSError:
-                pass
-
-        with open(path, encoding="utf-8") as fh:
-            for lineno, raw_line in enumerate(fh, 1):
-                line = raw_line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if line.startswith("export "):
-                    line = line[7:].strip()
-                if "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip()
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                    value = value[1:-1]
-                if key and key not in os.environ:
-                    os.environ[key] = value
-    except FileNotFoundError:
-        sys.exit(f"ERROR: env file not found: {path}")
-    except PermissionError:
-        sys.exit(f"ERROR: cannot read env file (permission denied): {path}")
-
-
-# ---------------------------------------------------------------------------
-# Config file loader (same as find_default_appids.py)
+# Config file loader
 # ---------------------------------------------------------------------------
 
 def load_config(path: str) -> dict[str, Any]:
-    """Load and validate a JSON config file.
-
-    Returns a flat dict of argparse-compatible defaults.
-    Credentials (auth/elasticsearch sections) are loaded into env vars.
-    """
+    """Load config.json and return the raw dict."""
     try:
         with open(path, encoding="utf-8") as fh:
             raw = json.load(fh)
@@ -113,73 +62,25 @@ def load_config(path: str) -> dict[str, Any]:
 
     if not isinstance(raw, dict):
         sys.exit(f"ERROR: config file must be a JSON object, got {type(raw).__name__}")
-
-    defaults: dict[str, Any] = {}
-
-    # --- auth section -> env vars (won't override existing) ---
-    auth = raw.get("auth", {})
-    env_mapping = {
-        "cribl_url": "CRIBL_URL",
-        "client_id": "CRIBL_CLIENT_ID",
-        "client_secret": "CRIBL_CLIENT_SECRET",
-        "username": "CRIBL_USERNAME",
-        "password": "CRIBL_PASSWORD",
-        "token": "CRIBL_TOKEN",
-    }
-    for key, env_name in env_mapping.items():
-        val = auth.get(key, "")
-        if val and env_name not in os.environ:
-            os.environ[env_name] = str(val)
-
-    # --- capture section (only group is relevant here) ---
-    capture = raw.get("capture", {})
-    if "groups" in capture:
-        groups = capture["groups"]
-        if isinstance(groups, list) and groups:
-            defaults["group"] = groups[0]
-
-    # --- matching section ---
-    matching = raw.get("matching", {})
-    if "mode" in matching:
-        defaults["match_mode"] = matching["mode"]
-
-    # --- elasticsearch section ---
-    es_cfg = raw.get("elasticsearch", {})
-    if "url" in es_cfg:
-        defaults["es_url"] = es_cfg["url"]
-    if "index" in es_cfg:
-        defaults["result_index"] = es_cfg["index"]
-    es_env_map = {
-        "api_key": "ES_API_KEY",
-        "username": "ES_USERNAME",
-        "password": "ES_PASSWORD",
-    }
-    for key, env_name in es_env_map.items():
-        val = es_cfg.get(key, "")
-        if val and env_name not in os.environ:
-            os.environ[env_name] = str(val)
-
-    # --- connection section ---
-    conn = raw.get("connection", {})
-    if "verify_ssl" in conn:
-        defaults["no_verify_ssl"] = not conn["verify_ssl"]
-    if "env_file" in conn:
-        defaults["env_file"] = conn["env_file"]
-
-    return defaults
+    return raw
 
 
 # ---------------------------------------------------------------------------
 # HTTP sessions
 # ---------------------------------------------------------------------------
 
-def build_es_session(verify_ssl: bool = True) -> requests.Session:
+def build_es_session(
+    verify_ssl: bool = True,
+    api_key: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+) -> requests.Session:
     s = requests.Session()
     s.verify = verify_ssl
+    if not verify_ssl:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     s.headers["Content-Type"] = "application/json"
-    api_key = os.environ.get("ES_API_KEY", "").strip()
-    username = os.environ.get("ES_USERNAME", "").strip()
-    password = os.environ.get("ES_PASSWORD", "").strip()
     if api_key:
         s.headers["Authorization"] = f"ApiKey {api_key}"
     elif username and password:
@@ -202,13 +103,14 @@ def build_cribl_session(verify_ssl: bool = True) -> requests.Session:
 
 
 # ---------------------------------------------------------------------------
-# Cribl Auth (same as find_default_appids.py)
+# Cribl Auth
 # ---------------------------------------------------------------------------
 
 class CriblAuth:
-    def __init__(self, cribl_url: str, session: requests.Session) -> None:
+    def __init__(self, cribl_url: str, session: requests.Session, creds: dict[str, str]) -> None:
         self._cribl_url = cribl_url.rstrip("/")
         self._session = session
+        self._creds = creds
         self._token: str | None = None
         self._expires_at: float = 0.0
         self._lock = threading.Lock()
@@ -224,11 +126,11 @@ class CriblAuth:
             return self._token
 
     def _authenticate(self) -> None:
-        client_id = os.environ.get("CRIBL_CLIENT_ID", "").strip()
-        client_secret = os.environ.get("CRIBL_CLIENT_SECRET", "").strip()
-        username = os.environ.get("CRIBL_USERNAME", "").strip()
-        password = os.environ.get("CRIBL_PASSWORD", "").strip()
-        static_token = os.environ.get("CRIBL_TOKEN", "").strip()
+        client_id = self._creds.get("client_id", "").strip()
+        client_secret = self._creds.get("client_secret", "").strip()
+        username = self._creds.get("username", "").strip()
+        password = self._creds.get("password", "").strip()
+        static_token = self._creds.get("token", "").strip()
 
         if client_id and client_secret:
             resp = self._session.post(
@@ -265,13 +167,13 @@ class CriblAuth:
 
         else:
             sys.exit(
-                "ERROR: No Cribl credentials. Set CRIBL_CLIENT_ID+CRIBL_CLIENT_SECRET, "
-                "CRIBL_USERNAME+CRIBL_PASSWORD, or CRIBL_TOKEN"
+                "ERROR: No Cribl credentials in config.json auth section. "
+                "Provide client_id+client_secret, username+password, or token."
             )
 
 
 # ---------------------------------------------------------------------------
-# Cribl API client (read-only, same as find_default_appids.py)
+# Cribl API client (read-only)
 # ---------------------------------------------------------------------------
 
 class CriblClient:
@@ -318,9 +220,9 @@ class CriblClient:
 # Step 1: Fetch apmIds from ELK
 # ---------------------------------------------------------------------------
 
-def fetch_all_apmids(session: requests.Session, es_url: str, days: int) -> list[dict]:
+def fetch_all_apmids(session: requests.Session, es_url: str, source_index: str, days: int) -> list[dict]:
     """Composite aggregation to get ALL unique apmId/appName pairs."""
-    url = f"{es_url}/{SOURCE_INDEX}/_search"
+    url = f"{es_url}/{source_index}/_search"
     results = []
     after = None
 
@@ -363,7 +265,7 @@ def fetch_all_apmids(session: requests.Session, es_url: str, days: int) -> list[
             })
 
         after = buckets[-1]["key"]
-        print(f"  fetched {len(results)} unique pairs so far...", file=sys.stderr)
+        print(f"  fetched {len(results)} unique pairs so far...")
 
     return results
 
@@ -588,77 +490,78 @@ def print_status_table(results: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 def main():
-    # Pass 1: peek at --config to load defaults before full parse
-    pre_parser = argparse.ArgumentParser(add_help=False)
-    pre_parser.add_argument("--config", default=None)
-    pre_args, _ = pre_parser.parse_known_args()
-
-    config_defaults: dict[str, Any] = {}
-    if pre_args.config:
-        config_defaults = load_config(pre_args.config)
-
-    # Pass 2: full parse
     parser = argparse.ArgumentParser(
         description="Get apmIds from ELK, compare with Cribl destinations/routes, store results")
-    parser.add_argument("--config", default=None, help="Path to config.json (same format as find_default_appids.py)")
-    parser.add_argument("--env-file", default=None, help="Path to .env file")
-    parser.add_argument("--es-url", default=None, help="Elasticsearch URL")
-    parser.add_argument("--cribl-url", default=None, help="Cribl API URL")
-    parser.add_argument("--group", default=None, help="Cribl worker group (default: default)")
-    parser.add_argument("--match-mode", choices=["exact", "contains", "partition"],
-                        default=None, help="Matching mode (default: contains)")
+    parser.add_argument("--config", required=True, help="Path to config.json")
     parser.add_argument("--days", type=int, default=30, help="Look back N days (default: 30)")
-    parser.add_argument("--result-index", default=None,
-                        help=f"ELK index to store results (default: {DEFAULT_RESULT_INDEX})")
     parser.add_argument("--output", "-o", help="Also save CSV to file")
-    parser.add_argument("--no-verify-ssl", action="store_true", default=None)
     args = parser.parse_args()
 
-    # Merge: CLI args > config.json > hardcoded defaults
-    for key, value in config_defaults.items():
-        if getattr(args, key, None) is None:
-            setattr(args, key, value)
+    # Load config
+    cfg = load_config(args.config)
 
-    # Hardcoded fallbacks for anything still None
-    _fallbacks: dict[str, Any] = {
-        "group": "default",
-        "match_mode": "contains",
-        "no_verify_ssl": False,
-    }
-    for key, value in _fallbacks.items():
-        if getattr(args, key, None) is None:
-            setattr(args, key, value)
+    # --- Parse all settings from config.json ---
 
-    # Load .env file if specified (before reading env vars)
-    if args.env_file:
-        load_env_file(args.env_file)
-
-    # Resolve URLs from CLI > config > env vars
-    es_url = (args.es_url or os.environ.get("ES_URL", "")).strip().rstrip("/")
-    cribl_url = (args.cribl_url or os.environ.get("CRIBL_URL", "")).strip().rstrip("/")
-    result_index = (args.result_index or os.environ.get("ES_INDEX", DEFAULT_RESULT_INDEX)).strip()
-
-    if not es_url:
-        sys.exit("ERROR: --es-url or ES_URL required (via CLI, config, or env)")
+    # Cribl auth
+    auth_cfg = cfg.get("auth", {})
+    cribl_url = auth_cfg.get("cribl_url", "").strip().rstrip("/")
     if not cribl_url:
-        sys.exit("ERROR: --cribl-url or CRIBL_URL required (via CLI, config, or env)")
+        sys.exit("ERROR: auth.cribl_url is required in config.json")
 
-    verify_ssl = not args.no_verify_ssl
-    es_session = build_es_session(verify_ssl)
+    # Cribl capture (group)
+    capture_cfg = cfg.get("capture", {})
+    groups = capture_cfg.get("groups", ["default"])
+    group = groups[0] if isinstance(groups, list) and groups else "default"
+
+    # Matching
+    matching_cfg = cfg.get("matching", {})
+    match_mode = matching_cfg.get("mode", "contains")
+
+    # Source ELK (where to READ apmIds)
+    src_es_cfg = cfg.get("source_elasticsearch", {})
+    source_es_url = src_es_cfg.get("url", "").strip().rstrip("/")
+    source_index = src_es_cfg.get("index", DEFAULT_SOURCE_INDEX).strip()
+    source_es_api_key = src_es_cfg.get("api_key", "").strip() or None
+    source_es_username = src_es_cfg.get("username", "").strip() or None
+    source_es_password = src_es_cfg.get("password", "").strip() or None
+    if not source_es_url:
+        sys.exit("ERROR: source_elasticsearch.url is required in config.json")
+
+    # Result ELK (where to WRITE results)
+    result_es_cfg = cfg.get("elasticsearch", {})
+    result_es_url = result_es_cfg.get("url", "").strip().rstrip("/") or source_es_url
+    result_index = result_es_cfg.get("index", DEFAULT_RESULT_INDEX).strip()
+    result_es_api_key = result_es_cfg.get("api_key", "").strip() or None
+    result_es_username = result_es_cfg.get("username", "").strip() or None
+    result_es_password = result_es_cfg.get("password", "").strip() or None
+
+    # Connection
+    conn_cfg = cfg.get("connection", {})
+    verify_ssl = conn_cfg.get("verify_ssl", True)
+
+    # --- Build sessions ---
+    source_es_session = build_es_session(
+        verify_ssl, api_key=source_es_api_key,
+        username=source_es_username, password=source_es_password,
+    )
+    result_es_session = build_es_session(
+        verify_ssl, api_key=result_es_api_key,
+        username=result_es_username, password=result_es_password,
+    )
     cribl_session = build_cribl_session(verify_ssl)
 
-    # Step 1: Get all apmIds from ELK
-    print(f"\n[1/4] Querying {SOURCE_INDEX} for last {args.days} days...")
-    raw_pairs = fetch_all_apmids(es_session, es_url, args.days)
+    # --- Step 1: Get all apmIds from source ELK ---
+    print(f"\n[1/4] Querying {source_es_url}/{source_index} for last {args.days} days...")
+    raw_pairs = fetch_all_apmids(source_es_session, source_es_url, source_index, args.days)
     print(f"  Found {len(raw_pairs)} unique apmId/appName pairs")
 
     apmids = dedup_by_apmid(raw_pairs)
     print(f"  After dedup: {len(apmids)} unique apmIds")
 
-    # Step 2: Get Cribl destinations + routes
-    print(f"\n[2/4] Fetching Cribl destinations & routes (group={args.group})...")
-    auth = CriblAuth(cribl_url, cribl_session)
-    client = CriblClient(cribl_url, args.group, auth, cribl_session)
+    # --- Step 2: Get Cribl destinations + routes ---
+    print(f"\n[2/4] Fetching Cribl destinations & routes (group={group})...")
+    auth = CriblAuth(cribl_url, cribl_session, auth_cfg)
+    client = CriblClient(cribl_url, group, auth, cribl_session)
 
     destinations = client.list_azure_blob_outputs()
     print(f"  Found {len(destinations)} azure_blob destination(s)")
@@ -668,14 +571,14 @@ def main():
     routes = client.list_routes()
     print(f"  Found {len(routes)} route(s)")
 
-    # Step 3: Compare
-    print(f"\n[3/4] Matching apmIds to destinations/routes (mode={args.match_mode})...")
-    results = check_route_dest_status(apmids, destinations, routes, args.match_mode)
+    # --- Step 3: Compare ---
+    print(f"\n[3/4] Matching apmIds to destinations/routes (mode={match_mode})...")
+    results = check_route_dest_status(apmids, destinations, routes, match_mode)
     print_status_table(results)
 
-    # Step 4: Index results to ELK
-    print(f"\n[4/4] Indexing {len(results)} results to {result_index}...")
-    indexed = index_to_elk(es_session, es_url, result_index, results, args.group)
+    # --- Step 4: Index results to result ELK ---
+    print(f"\n[4/4] Indexing {len(results)} results to {result_es_url}/{result_index}...")
+    indexed = index_to_elk(result_es_session, result_es_url, result_index, results, group)
     print(f"  Indexed {indexed} doc(s) to {result_index}")
 
     # Optional CSV output

@@ -26,10 +26,20 @@
     "lookup": "APP_foo.json"
   },
 
+  "source_elasticsearch": {
+    "url": "https://elk.internal:9200",
+    "index": "logs-k8s-container-all*",
+    "api_key": "",
+    "username": "",
+    "password": ""
+  },
+
   "elasticsearch": {
     "url": "https://elk.internal:9200",
     "index": "cribl-untracked-appids",
-    "api_key": ""
+    "api_key": "",
+    "username": "",
+    "password": ""
   },
 
   "logging": {
