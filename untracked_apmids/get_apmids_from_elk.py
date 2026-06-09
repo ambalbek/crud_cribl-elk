@@ -250,9 +250,26 @@ def fetch_all_apmids(session: requests.Session, es_url: str, source_index: str, 
 
         resp = session.post(url, json=query, timeout=(CONNECT_TIMEOUT, 60))
         if resp.status_code != 200:
-            sys.exit(f"ERROR: ES returned HTTP {resp.status_code}: {resp.text[:500]}")
+            sys.exit(f"ERROR: ES returned HTTP {resp.status_code}: {resp.text[:1000]}")
 
         data = resp.json()
+
+        # Debug: print full response on first request if no aggregations
+        if "aggregations" not in data:
+            print(f"\nERROR: ES response has no 'aggregations' key.", file=sys.stderr)
+            print(f"  URL: {url}", file=sys.stderr)
+            print(f"  Response keys: {list(data.keys())}", file=sys.stderr)
+            if "error" in data:
+                print(f"  Error: {json.dumps(data['error'], indent=2)[:2000]}", file=sys.stderr)
+            else:
+                print(f"  Full response: {json.dumps(data, indent=2)[:2000]}", file=sys.stderr)
+            print(f"\n  Possible fixes:", file=sys.stderr)
+            print(f"    - Check that index '{source_index}' exists", file=sys.stderr)
+            print(f"    - Check field names: apmId.keyword / appName.keyword", file=sys.stderr)
+            print(f"    - Try without .keyword: apmId / appName", file=sys.stderr)
+            print(f"    - Verify index mapping: GET {source_index}/_mapping/field/apmId", file=sys.stderr)
+            sys.exit(1)
+
         buckets = data["aggregations"]["unique_pairs"]["buckets"]
         if not buckets:
             break
