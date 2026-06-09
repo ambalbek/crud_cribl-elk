@@ -574,8 +574,9 @@ def main():
         if missing:
             base, ext = os.path.splitext(args.output)
             missing_path = f"{base}_missing_only{ext}"
+            missing_fields = ["apmId", "appName", "status"]
             with open(missing_path, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["apmId", "appName", "status"])
+                writer = csv.DictWriter(f, fieldnames=missing_fields, extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(missing)
             print(f"  Missing apmIds CSV saved to {missing_path} ({len(missing)} entries)")
