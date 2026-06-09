@@ -559,7 +559,7 @@ def main():
     indexed = index_to_elk(result_es_session, result_es_url, result_index, results, group)
     print(f"  Indexed {indexed} doc(s) to {result_index}")
 
-    # Optional CSV output
+    # Optional CSV output — full report
     if args.output:
         fieldnames = ["apmId", "appName", "has_destination", "destination_id",
                        "has_route", "route_id", "status"]
@@ -568,6 +568,17 @@ def main():
             writer.writeheader()
             writer.writerows(results)
         print(f"  CSV saved to {args.output}")
+
+        # Additional report — missing apmIds only
+        missing = [r for r in results if r["status"] != "CONFIGURED"]
+        if missing:
+            base, ext = os.path.splitext(args.output)
+            missing_path = f"{base}_missing_only{ext}"
+            with open(missing_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["apmId", "appName", "status"])
+                writer.writeheader()
+                writer.writerows(missing)
+            print(f"  Missing apmIds CSV saved to {missing_path} ({len(missing)} entries)")
 
 
 if __name__ == "__main__":
