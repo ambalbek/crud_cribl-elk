@@ -410,7 +410,24 @@ def fetch_apmids_from_blob(
         for app_idx, app_name_dir in enumerate(app_dirs, 1):
             # Collect one blob per app/region/env folder
             blobs_to_read: list[str] = []
-            for region in regions:
+
+            # Auto-discover region subdirs for this app
+            app_prefix = f"{date_prefix}/{app_name_dir}/"
+            discovered_regions: list[str] = []
+            for item in container_client.walk_blobs(name_starts_with=app_prefix, delimiter="/"):
+                name = item.name.rstrip("/")
+                parts = name.split("/")
+                if len(parts) == 5:
+                    region_name = parts[4]
+                elif len(parts) == 4:
+                    region_name = parts[3]
+                else:
+                    continue
+                if region_filter and region_name.lower() != region_filter.lower():
+                    continue
+                discovered_regions.append(region_name)
+
+            for region in discovered_regions:
                 if env_filter:
                     scan_prefix = f"{date_prefix}/{app_name_dir}/{region}/{env_filter}/"
                 else:
