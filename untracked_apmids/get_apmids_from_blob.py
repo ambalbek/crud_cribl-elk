@@ -353,7 +353,7 @@ def discover_app_dirs(container_client: ContainerClient, date_prefix: str) -> li
     return app_dirs
 
 
-def _extract_apmid_from_blob(container_client: ContainerClient, blob_name: str, app_name_dir: str) -> tuple[str, str] | None:
+def _extract_apmid_from_blob(container_client: ContainerClient, blob_name: str, app_name_dir: str, debug: bool = False) -> tuple[str, str] | None:
     """Download one blob, read first valid JSON line, extract apmId. Returns (apmId, appName) or None."""
     blob_data = container_client.download_blob(blob_name).readall()
     with gzip.open(io.BytesIO(blob_data), "rt", encoding="utf-8") as gz:
@@ -366,9 +366,14 @@ def _extract_apmid_from_blob(container_client: ContainerClient, blob_name: str, 
                 apm_id = event.get("apmId")
                 if apm_id:
                     app_name = event.get("appName") or app_name_dir
+                    print(f"      {blob_name} -> apmId={apm_id}")
                     return (str(apm_id), str(app_name))
+                else:
+                    print(f"      {blob_name} -> no apmId field. Keys: {sorted(event.keys())}")
+                    return None
             except json.JSONDecodeError:
                 continue
+    print(f"      {blob_name} -> empty or no valid JSON lines")
     return None
 
 
