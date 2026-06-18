@@ -420,19 +420,19 @@ def fetch_apmids_from_blob(
         print(f"    Found {total_apps} app directories")
 
         for app_idx, app_name_dir in enumerate(app_dirs, 1):
-            # List all blobs under this app and grab the first CriblOut file
+            # List CriblOut files under this app, try up to MAX_TRIES to find apmId
             app_prefix = f"{date_prefix}/{app_name_dir}/"
-            blob_to_read: str | None = None
+            max_tries = 10
+            found = False
+            tried = 0
 
             for blob in container_client.list_blobs(name_starts_with=app_prefix):
                 bname = blob.name
-                # Must be a CriblOut gzip file
                 if not bname.endswith(".json.gz"):
                     continue
                 filename = bname.split("/")[-1]
                 if not filename.startswith("CriblOut-"):
                     continue
-                # Apply optional filters by checking the path
                 if region_filter or env_filter:
                     parsed = parse_blob_path(bname)
                     if not parsed:
@@ -441,36 +441,34 @@ def fetch_apmids_from_blob(
                         continue
                     if env_filter and parsed["env"].lower() != env_filter.lower():
                         continue
-                blob_to_read = bname
-                break  # only need the first one
 
-            if not blob_to_read:
-                print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no CriblOut files found")
-                continue
+                tried += 1
+                try:
+                    result = _extract_apmid_from_blob(container_client, bname, app_name_dir, debug)
+                    if result:
+                        apm_id, app_name = result
+                        counter[(apm_id, app_name)] += 1
+                        blobs_processed += 1
+                        print(
+                            f"    [{app_idx}/{total_apps}] {app_name_dir}: "
+                            f"apmId={apm_id} (file #{tried}) | "
+                            f"total: {len(counter)} unique apmIds"
+                        )
+                        found = True
+                        break
+                except Exception as exc:
+                    blobs_errors += 1
+                    if debug:
+                        print(f"      ERROR reading {bname}: {exc}", file=sys.stderr)
 
-            # Download the single blob to extract apmId
-            try:
-                result = _extract_apmid_from_blob(container_client, blob_to_read, app_name_dir, debug)
-                if result:
-                    apm_id, app_name = result
-                    counter[(apm_id, app_name)] += 1
-                    print(
-                        f"    [{app_idx}/{total_apps}] {app_name_dir}: "
-                        f"apmId={apm_id} | total: {len(counter)} unique apmIds"
-                    )
+                if tried >= max_tries:
+                    break
+
+            if not found:
+                if tried == 0:
+                    print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no CriblOut files found")
                 else:
-                    print(
-                        f"    [{app_idx}/{total_apps}] {app_name_dir}: "
-                        f"blob read OK but no apmId in {blob_to_read}"
-                    )
-                blobs_processed += 1
-            except Exception as exc:
-                blobs_errors += 1
-                print(
-                    f"    [{app_idx}/{total_apps}] {app_name_dir}: "
-                    f"ERROR reading {blob_to_read}: {exc}",
-                    file=sys.stderr,
-                )
+                    print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no apmId after {tried} files")
 
             if max_blobs and blobs_processed >= max_blobs:
                 print(f"  Reached max_blobs limit ({max_blobs}), stopping.")
