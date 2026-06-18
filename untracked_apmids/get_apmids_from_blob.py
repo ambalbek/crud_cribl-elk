@@ -354,29 +354,38 @@ def discover_app_dirs(container_client: ContainerClient, date_prefix: str) -> li
 def _extract_apmid_from_blob(
     container_client: ContainerClient, blob_name: str, app_name_dir: str, debug: bool = False,
 ) -> tuple[str, str] | None:
-    """Download one blob, read first valid JSON line, extract apmId. Returns (apmId, appName) or None."""
+    """Download one blob, scan up to 10 JSON lines for apmId. Returns (apmId, appName) or None."""
     blob_data = container_client.download_blob(blob_name).readall()
     with gzip.open(io.BytesIO(blob_data), "rt", encoding="utf-8") as gz:
+        lines_checked = 0
         for line in gz:
             line = line.strip()
             if not line:
                 continue
             try:
                 event = json.loads(line)
-                apm_id = event.get("apmId")
-                if apm_id:
-                    app_name = event.get("appName") or app_name_dir
-                    if debug:
-                        print(f"      {blob_name} -> apmId={apm_id}")
-                    return (str(apm_id), str(app_name))
-                else:
-                    if debug:
-                        print(f"      {blob_name} -> no apmId field. Keys: {sorted(event.keys())}")
-                    return None
             except json.JSONDecodeError:
                 continue
+
+            lines_checked += 1
+
+            apm_id = event.get("apmId")
+            if apm_id:
+                app_name = event.get("appName") or app_name_dir
+                if debug:
+                    print(f"      {blob_name} -> apmId={apm_id} (line {lines_checked})")
+                return (str(apm_id), str(app_name))
+
+            if debug and lines_checked <= 3:
+                sample = json.dumps(event, default=str)[:300]
+                print(f"      {blob_name} line {lines_checked} keys={sorted(event.keys())}")
+                print(f"        sample: {sample}")
+
+            if lines_checked >= 10:
+                break
+
     if debug:
-        print(f"      {blob_name} -> empty or no valid JSON lines")
+        print(f"      {blob_name} -> no apmId in {lines_checked} lines checked")
     return None
 
 
