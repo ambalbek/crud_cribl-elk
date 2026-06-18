@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
+import io
 import json
 import os
 import sys
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -350,6 +353,25 @@ def discover_app_dirs(container_client: ContainerClient, date_prefix: str) -> li
     return app_dirs
 
 
+def _extract_apmid_from_blob(container_client: ContainerClient, blob_name: str, app_name_dir: str) -> tuple[str, str] | None:
+    """Download one blob, read first valid JSON line, extract apmId. Returns (apmId, appName) or None."""
+    blob_data = container_client.download_blob(blob_name).readall()
+    with gzip.open(io.BytesIO(blob_data), "rt", encoding="utf-8") as gz:
+        for line in gz:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+                apm_id = event.get("apmId")
+                if apm_id:
+                    app_name = event.get("appName") or app_name_dir
+                    return (str(apm_id), str(app_name))
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
 def fetch_apmids_from_blob(
     container_client: ContainerClient,
     days: int = 1,
@@ -360,38 +382,38 @@ def fetch_apmids_from_blob(
     debug: bool = False,
 ) -> list[dict]:
     """
-    List blobs in the default container and extract appName from the folder path.
-    No blob downloads needed — the path contains the appName:
-      {date}/{appName}/{region}/{env}/CriblOut-*.json.gz
+    List blobs in the default container, download ONE file per app/region/env
+    folder to extract the apmId from the JSON content.
 
+    Path pattern: {date}/{appName}/{region}/{env}/CriblOut-*.json.gz
     Only scans known regions (wau, ftw, azn, azs).
-    Takes one blob per app/region/env folder as proof of existence.
+    Uses ThreadPoolExecutor for parallel downloads.
 
     Returns list of dicts: [{apmId, appName, event_count}, ...]
-    (apmId == appName since we derive it from the path)
     """
     date_prefixes = generate_date_prefixes(days)
     regions = [region_filter.lower()] if region_filter else KNOWN_REGIONS
-    counter: Counter = Counter()  # appName -> blob count
-    blobs_scanned = 0
+    counter: Counter = Counter()  # (apmId, appName) -> count
+    blobs_processed = 0
+    blobs_errors = 0
+    lock = threading.Lock()
 
     for date_prefix in date_prefixes:
         print(f"  Scanning date: {date_prefix}")
 
-        # Discover appName directories under this date
         app_dirs = discover_app_dirs(container_client, date_prefix)
         total_apps = len(app_dirs)
         print(f"    Found {total_apps} app directories")
 
         for app_idx, app_name_dir in enumerate(app_dirs, 1):
-            app_hits = 0
+            # Collect one blob per app/region/env folder
+            blobs_to_read: list[str] = []
             for region in regions:
                 if env_filter:
                     scan_prefix = f"{date_prefix}/{app_name_dir}/{region}/{env_filter}/"
                 else:
                     scan_prefix = f"{date_prefix}/{app_name_dir}/{region}/"
 
-                # Take one blob per env folder — just need to confirm it exists
                 seen_envs: set[str] = set()
                 for blob in container_client.list_blobs(name_starts_with=scan_prefix):
                     parsed = parse_blob_path(blob.name)
@@ -401,35 +423,62 @@ def fetch_apmids_from_blob(
                     if env_key in seen_envs:
                         continue
                     seen_envs.add(env_key)
-                    counter[app_name_dir] += 1
-                    app_hits += 1
-                    blobs_scanned += 1
+                    blobs_to_read.append(blob.name)
 
-                    if max_blobs and blobs_scanned >= max_blobs:
+                    if max_blobs and (blobs_processed + len(blobs_to_read)) >= max_blobs:
                         break
-                if max_blobs and blobs_scanned >= max_blobs:
+                if max_blobs and (blobs_processed + len(blobs_to_read)) >= max_blobs:
                     break
+
+            if not blobs_to_read:
+                continue
+
+            # Download in parallel to extract apmId
+            app_ok = 0
+            app_err = 0
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_extract_apmid_from_blob, container_client, name, app_name_dir): name
+                    for name in blobs_to_read
+                }
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result:
+                            apm_id, app_name = result
+                            with lock:
+                                counter[(apm_id, app_name)] += 1
+                        app_ok += 1
+                    except Exception as exc:
+                        app_err += 1
+                        if debug:
+                            blob_name = futures[future]
+                            print(f"      ERROR reading {blob_name}: {exc}", file=sys.stderr)
+
+            blobs_processed += app_ok
+            blobs_errors += app_err
 
             print(
                 f"    [{app_idx}/{total_apps}] {app_name_dir}: "
-                f"{app_hits} env/region combos | "
-                f"total: {blobs_scanned} scanned, {len(counter)} unique appNames"
+                f"{app_ok} blobs OK, {app_err} errors | "
+                f"total: {blobs_processed} blobs, {len(counter)} unique apmIds"
             )
 
-            if max_blobs and blobs_scanned >= max_blobs:
+            if max_blobs and blobs_processed >= max_blobs:
                 print(f"  Reached max_blobs limit ({max_blobs}), stopping.")
                 break
 
-        print(f"    {blobs_scanned} blobs scanned total so far")
+        print(f"    {blobs_processed} blobs processed total so far")
 
-    print(f"\n  Summary: {blobs_scanned} blobs scanned, {len(counter)} unique appNames (no downloads needed)")
+    print(f"\n  Summary: {blobs_processed} blobs processed, {blobs_errors} errors, {len(counter)} unique apmIds")
 
-    # Convert counter to result list — appName from path is used as apmId
-    results = [
-        {"apmId": app_name, "appName": app_name, "event_count": count}
-        for app_name, count in counter.items()
-    ]
-    return sorted(results, key=lambda r: r["apmId"])
+    # Deduplicate — keep highest count per apmId
+    best: dict[str, dict] = {}
+    for (apm_id, app_name), count in counter.items():
+        if apm_id not in best or count > best[apm_id]["event_count"]:
+            best[apm_id] = {"apmId": apm_id, "appName": app_name, "event_count": count}
+
+    return sorted(best.values(), key=lambda r: r["apmId"])
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +624,7 @@ def main():
     parser.add_argument("--region", help="Filter blobs by region (e.g. eastus)")
     parser.add_argument("--env", help="Filter blobs by environment (e.g. prod, dev)")
     parser.add_argument("--max-blobs", type=int, default=0, help="Max blobs to process (0=unlimited)")
+    parser.add_argument("--workers", type=int, default=8, help="Parallel blob download threads (default: 8)")
     parser.add_argument("--output", "-o", help="Save CSV to file")
     parser.add_argument("--json-output", help="Save JSON to file")
     parser.add_argument("--debug", action="store_true", help="Print debug info")
@@ -625,6 +675,7 @@ def main():
         region_filter=args.region,
         env_filter=args.env,
         max_blobs=args.max_blobs,
+        max_workers=args.workers,
         debug=args.debug,
     )
     print(f"\n  Found {len(apmids)} unique apmIds")
