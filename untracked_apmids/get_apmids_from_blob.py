@@ -422,24 +422,13 @@ def fetch_apmids_from_blob(
 
         for app_idx, app_name_dir in enumerate(app_dirs, 1):
             app_prefix = f"{date_prefix}/{app_name_dir}/"
-            found = False
-            tried = 0
-            empty_files = 0
-            no_apmid_files = 0
-            error_files = 0
-            max_per_region = 5
-
             regions = [region_filter.lower()] if region_filter else KNOWN_REGIONS
 
+            # Phase 1: Collect ALL CriblOut candidates across all regions (listing is cheap)
+            candidates: list[tuple[str, int]] = []  # (blob_name, size)
             for region in regions:
-                if found:
-                    break
                 region_prefix = f"{app_prefix}{region}/"
-                region_tried = 0
-                region_listed = 0
-
                 for blob in container_client.list_blobs(name_starts_with=region_prefix):
-                    region_listed += 1
                     bname = blob.name
                     if not bname.endswith(".json.gz"):
                         continue
@@ -452,54 +441,60 @@ def fetch_apmids_from_blob(
                             continue
                         if parsed["env"].lower() != env_filter.lower():
                             continue
+                    candidates.append((bname, blob.size or 0))
 
-                    tried += 1
-                    region_tried += 1
+            if not candidates:
+                print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no CriblOut files found")
+                continue
 
-                    # Skip empty blobs without downloading
-                    if blob.size is not None and blob.size == 0:
-                        empty_files += 1
-                        if region_tried >= max_per_region:
-                            break
-                        continue
+            # Phase 2: Sort by size descending — biggest files most likely to have data.
+            # Empty gzip files are ~20 bytes; real data files are 100+ bytes.
+            candidates.sort(key=lambda x: x[1], reverse=True)
 
-                    try:
-                        result = _extract_apmid_from_blob(container_client, bname, app_name_dir, debug)
-                        if result:
-                            apm_id, app_name = result
-                            counter[(apm_id, app_name)] += 1
-                            blobs_processed += 1
-                            print(
-                                f"    [{app_idx}/{total_apps}] {app_name_dir}: "
-                                f"apmId={apm_id} (region={region}, file #{tried}) | "
-                                f"total: {len(counter)} unique apmIds"
-                            )
-                            found = True
-                            break
-                        else:
-                            no_apmid_files += 1
-                    except Exception as exc:
-                        error_files += 1
-                        blobs_errors += 1
+            # Skip files smaller than 50 bytes (empty gzip stubs)
+            min_size = 50
+            viable = [(name, size) for name, size in candidates if size >= min_size]
+            skipped_small = len(candidates) - len(viable)
+
+            if not viable:
+                print(
+                    f"    [{app_idx}/{total_apps}] {app_name_dir}: "
+                    f"{len(candidates)} files found but all < {min_size} bytes (empty gzip)"
+                )
+                continue
+
+            # Phase 3: Download until we find apmId (cap at 20 downloads)
+            max_downloads = 20
+            found = False
+            downloaded = 0
+            errors = 0
+
+            for bname, size in viable[:max_downloads]:
+                try:
+                    result = _extract_apmid_from_blob(container_client, bname, app_name_dir, debug)
+                    downloaded += 1
+                    if result:
+                        apm_id, app_name = result
+                        counter[(apm_id, app_name)] += 1
+                        blobs_processed += 1
                         print(
-                            f"      ERROR [{app_name_dir}/{region}] {bname}: {exc}",
-                            file=sys.stderr,
+                            f"    [{app_idx}/{total_apps}] {app_name_dir}: "
+                            f"apmId={apm_id} (file #{downloaded}, size={size}) | "
+                            f"total: {len(counter)} unique apmIds"
                         )
-
-                    if region_tried >= max_per_region:
+                        found = True
                         break
-
-                if debug and not found:
-                    print(
-                        f"      {app_name_dir}/{region}: "
-                        f"listed={region_listed}, criblout={region_tried}, "
-                        f"empty={empty_files}, no_apmid={no_apmid_files}, errors={error_files}"
-                    )
+                except Exception as exc:
+                    errors += 1
+                    blobs_errors += 1
+                    if debug:
+                        print(f"      ERROR {bname}: {exc}", file=sys.stderr)
 
             if not found:
                 print(
                     f"    [{app_idx}/{total_apps}] {app_name_dir}: NOT FOUND | "
-                    f"tried={tried}, empty={empty_files}, no_apmid={no_apmid_files}, errors={error_files}"
+                    f"total_files={len(candidates)}, viable={len(viable)}, "
+                    f"skipped_small={skipped_small}, downloaded={downloaded}, errors={errors}"
                 )
 
             if max_blobs and blobs_processed >= max_blobs:
