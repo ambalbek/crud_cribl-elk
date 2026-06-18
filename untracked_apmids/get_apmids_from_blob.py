@@ -54,7 +54,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONTAINER = "default"
-KNOWN_REGIONS = ["wau", "ftw", "azn", "azs"]
+KNOWN_REGIONS = ["northcentralus", "southcentralus", "waukeegan", "fortworth"]
 BLOB_PREFIX_DATE_FMT = "%Y/%m/%d"
 CRIBL_CLOUD_LOGIN_URL = "https://login.cribl.cloud/oauth/token"
 CRIBL_CLOUD_AUDIENCE = "https://api.cribl.cloud"
