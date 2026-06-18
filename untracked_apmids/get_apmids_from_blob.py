@@ -229,8 +229,38 @@ class CriblClient:
 # Step 1: Azure Blob — list and read blobs from default container
 # ---------------------------------------------------------------------------
 
+def _build_service_principal_credential(blob_cfg: dict[str, str]):
+    """Build a ClientSecretCredential from tenant_id, client_id, client_secret."""
+    tenant_id = blob_cfg.get("tenant_id", "").strip()
+    client_id = blob_cfg.get("client_id", "").strip()
+    client_secret = blob_cfg.get("client_secret", "").strip()
+
+    if not (tenant_id and client_id and client_secret):
+        return None
+
+    try:
+        from azure.identity import ClientSecretCredential
+    except ImportError:
+        sys.exit(
+            "ERROR: azure-identity is required for service principal auth.\n"
+            "  pip install azure-identity"
+        )
+    return ClientSecretCredential(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+
+
 def build_blob_client(blob_cfg: dict[str, str]) -> ContainerClient:
-    """Build an Azure ContainerClient from config."""
+    """Build an Azure ContainerClient from config.
+
+    Auth priority:
+      1. connection_string
+      2. Service principal (tenant_id + client_id + client_secret)
+      3. account_url / account_name + sas_token / account_key
+      4. DefaultAzureCredential (managed identity / az login)
+    """
     connection_string = blob_cfg.get("connection_string", "").strip()
     account_url = blob_cfg.get("account_url", "").strip()
     account_name = blob_cfg.get("account_name", "").strip()
@@ -242,39 +272,38 @@ def build_blob_client(blob_cfg: dict[str, str]) -> ContainerClient:
         service = BlobServiceClient.from_connection_string(connection_string)
         return service.get_container_client(container)
 
-    if account_url:
-        if sas_token:
-            service = BlobServiceClient(account_url=account_url, credential=sas_token)
+    # Service principal auth — works with account_url or account_name
+    sp_credential = _build_service_principal_credential(blob_cfg)
+
+    url = account_url
+    if not url and account_name:
+        url = f"https://{account_name}.blob.core.windows.net"
+
+    if url:
+        if sp_credential:
+            service = BlobServiceClient(account_url=url, credential=sp_credential)
+        elif sas_token:
+            service = BlobServiceClient(account_url=url, credential=sas_token)
         elif account_key:
-            service = BlobServiceClient(account_url=account_url, credential=account_key)
+            service = BlobServiceClient(account_url=url, credential=account_key)
         else:
-            # Try DefaultAzureCredential (managed identity / az login)
+            # Fall back to DefaultAzureCredential (managed identity / az login)
             try:
                 from azure.identity import DefaultAzureCredential
-                service = BlobServiceClient(account_url=account_url, credential=DefaultAzureCredential())
+                service = BlobServiceClient(account_url=url, credential=DefaultAzureCredential())
             except ImportError:
                 sys.exit(
                     "ERROR: azure-identity is required for managed identity auth.\n"
                     "  pip install azure-identity\n"
-                    "  Or provide account_key or sas_token in config."
+                    "  Or provide account_key, sas_token, or service principal creds in config."
                 )
-        return service.get_container_client(container)
-
-    if account_name:
-        url = f"https://{account_name}.blob.core.windows.net"
-        if account_key:
-            service = BlobServiceClient(account_url=url, credential=account_key)
-        elif sas_token:
-            service = BlobServiceClient(account_url=url, credential=sas_token)
-        else:
-            sys.exit("ERROR: account_name requires account_key or sas_token")
         return service.get_container_client(container)
 
     sys.exit(
         "ERROR: blob_storage config must include one of:\n"
         "  - connection_string\n"
-        "  - account_url (+ optional sas_token / account_key)\n"
-        "  - account_name + account_key / sas_token"
+        "  - account_url (+ service principal / sas_token / account_key)\n"
+        "  - account_name (+ service principal / account_key / sas_token)"
     )
 
 

@@ -32,6 +32,9 @@
     "account_name": "",
     "account_key": "",
     "sas_token": "",
+    "tenant_id": "",
+    "client_id": "",
+    "client_secret": "",
     "container": "default"
   },
 
