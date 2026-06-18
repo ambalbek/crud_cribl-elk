@@ -53,6 +53,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONTAINER = "default"
+KNOWN_REGIONS = ["northcentralus", "southcentralus", "waukeegan", "fortworth"]
 BLOB_PREFIX_DATE_FMT = "%Y/%m/%d"
 CRIBL_CLOUD_LOGIN_URL = "https://login.cribl.cloud/oauth/token"
 CRIBL_CLOUD_AUDIENCE = "https://api.cribl.cloud"
@@ -425,16 +426,10 @@ def fetch_apmids_from_blob(
             tried = 0
             max_per_region = 5
 
-            # Discover region subdirs for this app
-            regions_found: list[str] = []
-            for item in container_client.walk_blobs(name_starts_with=app_prefix, delimiter="/"):
-                rname = item.name.rstrip("/").split("/")[-1]
-                if region_filter and rname.lower() != region_filter.lower():
-                    continue
-                regions_found.append(rname)
+            regions = [region_filter.lower()] if region_filter else KNOWN_REGIONS
 
             # Try files from each region until we find an apmId
-            for region in regions_found:
+            for region in regions:
                 if found:
                     break
                 region_prefix = f"{app_prefix}{region}/"
@@ -479,9 +474,9 @@ def fetch_apmids_from_blob(
 
             if not found:
                 if tried == 0:
-                    print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no CriblOut files found (regions: {regions_found})")
+                    print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no CriblOut files found in {regions}")
                 else:
-                    print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no apmId after {tried} files across {len(regions_found)} regions")
+                    print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no apmId after {tried} files across {len(regions)} regions")
 
             if max_blobs and blobs_processed >= max_blobs:
                 print(f"  Reached max_blobs limit ({max_blobs}), stopping.")
