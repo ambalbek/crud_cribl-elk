@@ -53,7 +53,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONTAINER = "default"
-KNOWN_REGIONS = ["northcentralus", "southcentralus", "waukeegan", "fortworth"]
 BLOB_PREFIX_DATE_FMT = "%Y/%m/%d"
 CRIBL_CLOUD_LOGIN_URL = "https://login.cribl.cloud/oauth/token"
 CRIBL_CLOUD_AUDIENCE = "https://api.cribl.cloud"
@@ -317,40 +316,6 @@ def generate_date_prefixes(days: int) -> list[str]:
     return prefixes
 
 
-def parse_blob_path(blob_name: str) -> dict[str, str] | None:
-    """
-    Parse blob path:  YYYY/MM/DD/appName/region/env/CriblOut-*.json.gz
-    Returns dict with appName, region, env, filename or None if path doesn't match.
-    """
-    parts = blob_name.split("/")
-    # Expect at least 7 parts: YYYY/MM/DD/appName/region/env/filename
-    if len(parts) < 7:
-        return None
-
-    filename = parts[-1]
-    if not filename.startswith("CriblOut-") or not filename.endswith(".json.gz"):
-        return None
-
-    return {
-        "date": f"{parts[0]}/{parts[1]}/{parts[2]}",
-        "appName": parts[3],
-        "region": parts[4],
-        "env": parts[5],
-        "filename": filename,
-    }
-
-
-def discover_app_dirs(container_client: ContainerClient, date_prefix: str) -> list[str]:
-    """List appName directories under a date prefix using delimiter-based listing."""
-    app_dirs = []
-    for item in container_client.walk_blobs(name_starts_with=f"{date_prefix}/", delimiter="/"):
-        # item.name looks like "2026/06/17/appName/"
-        name = item.name.rstrip("/")
-        parts = name.split("/")
-        if len(parts) == 4:
-            app_dirs.append(parts[3])
-    return app_dirs
-
 
 def _extract_apmid_from_blob(
     container_client: ContainerClient, blob_name: str, app_name_dir: str, debug: bool = False,
@@ -399,12 +364,11 @@ def fetch_apmids_from_blob(
     debug: bool = False,
 ) -> list[dict]:
     """
-    List blobs in the default container, download ONE file per app/region/env
-    folder to extract the apmId from the JSON content.
+    List ALL CriblOut-*.json.gz blobs under each date prefix.
+    Group by parent folder, pick the largest file per folder, download it
+    to extract apmId from the JSON content.
 
-    Path pattern: {date}/{appName}/{region}/{env}/CriblOut-*.json.gz
-    Auto-discovers region subdirectories per app.
-    Downloads one blob per app/region/env folder sequentially.
+    No assumptions about path depth — works with any folder structure.
 
     Returns list of dicts: [{apmId, appName, event_count}, ...]
     """
@@ -416,86 +380,69 @@ def fetch_apmids_from_blob(
     for date_prefix in date_prefixes:
         print(f"  Scanning date: {date_prefix}")
 
-        app_dirs = discover_app_dirs(container_client, date_prefix)
-        total_apps = len(app_dirs)
-        print(f"    Found {total_apps} app directories")
+        # Phase 1: List ALL CriblOut files under this date, group by parent folder.
+        # folder_key = everything before the filename
+        # e.g. "2026/06/18/app/sub/region/env/" -> pick best file per folder
+        folders: dict[str, tuple[str, int]] = {}  # folder -> (best_blob_name, best_size)
+        total_listed = 0
+        skipped_small = 0
+        min_size = 50  # empty gzip stubs are ~20 bytes
 
-        for app_idx, app_name_dir in enumerate(app_dirs, 1):
-            app_prefix = f"{date_prefix}/{app_name_dir}/"
-            regions = [region_filter.lower()] if region_filter else KNOWN_REGIONS
-
-            # Phase 1: Collect ALL CriblOut candidates across all regions (listing is cheap)
-            candidates: list[tuple[str, int]] = []  # (blob_name, size)
-            for region in regions:
-                region_prefix = f"{app_prefix}{region}/"
-                for blob in container_client.list_blobs(name_starts_with=region_prefix):
-                    bname = blob.name
-                    if not bname.endswith(".json.gz"):
-                        continue
-                    filename = bname.split("/")[-1]
-                    if not filename.startswith("CriblOut-"):
-                        continue
-                    if env_filter:
-                        parsed = parse_blob_path(bname)
-                        if not parsed:
-                            continue
-                        if parsed["env"].lower() != env_filter.lower():
-                            continue
-                    candidates.append((bname, blob.size or 0))
-
-            if not candidates:
-                print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no CriblOut files found")
+        print(f"    Listing all blobs (this may take a moment)...")
+        for blob in container_client.list_blobs(name_starts_with=f"{date_prefix}/"):
+            total_listed += 1
+            bname = blob.name
+            if not bname.endswith(".json.gz"):
+                continue
+            filename = bname.split("/")[-1]
+            if not filename.startswith("CriblOut-"):
                 continue
 
-            # Phase 2: Sort by size descending — biggest files most likely to have data.
-            # Empty gzip files are ~20 bytes; real data files are 100+ bytes.
-            candidates.sort(key=lambda x: x[1], reverse=True)
-
-            # Skip files smaller than 50 bytes (empty gzip stubs)
-            min_size = 50
-            viable = [(name, size) for name, size in candidates if size >= min_size]
-            skipped_small = len(candidates) - len(viable)
-
-            if not viable:
-                print(
-                    f"    [{app_idx}/{total_apps}] {app_name_dir}: "
-                    f"{len(candidates)} files found but all < {min_size} bytes (empty gzip)"
-                )
+            size = blob.size or 0
+            if size < min_size:
+                skipped_small += 1
                 continue
 
-            # Phase 3: Download until we find apmId (cap at 20 downloads)
-            max_downloads = 20
-            found = False
-            downloaded = 0
-            errors = 0
+            # Apply region filter if set — check if region appears in path
+            if region_filter and f"/{region_filter.lower()}/" not in bname.lower():
+                continue
+            if env_filter and f"/{env_filter.lower()}/" not in bname.lower():
+                continue
 
-            for bname, size in viable[:max_downloads]:
-                try:
-                    result = _extract_apmid_from_blob(container_client, bname, app_name_dir, debug)
-                    downloaded += 1
-                    if result:
-                        apm_id, app_name = result
-                        counter[(apm_id, app_name)] += 1
-                        blobs_processed += 1
-                        print(
-                            f"    [{app_idx}/{total_apps}] {app_name_dir}: "
-                            f"apmId={apm_id} (file #{downloaded}, size={size}) | "
-                            f"total: {len(counter)} unique apmIds"
-                        )
-                        found = True
-                        break
-                except Exception as exc:
-                    errors += 1
-                    blobs_errors += 1
+            # Group by parent folder (path without filename)
+            folder_key = bname.rsplit("/", 1)[0]
+            if folder_key not in folders or size > folders[folder_key][1]:
+                folders[folder_key] = (bname, size)
+
+        print(
+            f"    Listed {total_listed} blobs, "
+            f"{len(folders)} folders with CriblOut files, "
+            f"{skipped_small} empty files skipped"
+        )
+
+        if not folders:
+            print(f"    No CriblOut files found for {date_prefix}")
+            continue
+
+        # Phase 2: Download ONE file per folder (the biggest), extract apmId
+        total_folders = len(folders)
+        for folder_idx, (folder_key, (bname, size)) in enumerate(sorted(folders.items()), 1):
+            try:
+                result = _extract_apmid_from_blob(container_client, bname, folder_key, debug)
+                blobs_processed += 1
+                if result:
+                    apm_id, app_name = result
+                    counter[(apm_id, app_name)] += 1
+                    print(
+                        f"    [{folder_idx}/{total_folders}] apmId={apm_id} "
+                        f"(size={size}) | total: {len(counter)} unique apmIds"
+                    )
+                else:
                     if debug:
-                        print(f"      ERROR {bname}: {exc}", file=sys.stderr)
-
-            if not found:
-                print(
-                    f"    [{app_idx}/{total_apps}] {app_name_dir}: NOT FOUND | "
-                    f"total_files={len(candidates)}, viable={len(viable)}, "
-                    f"skipped_small={skipped_small}, downloaded={downloaded}, errors={errors}"
-                )
+                        print(f"    [{folder_idx}/{total_folders}] no apmId in {bname} (size={size})")
+            except Exception as exc:
+                blobs_errors += 1
+                print(f"    [{folder_idx}/{total_folders}] ERROR {bname}: {exc}", file=sys.stderr)
 
             if max_blobs and blobs_processed >= max_blobs:
                 print(f"  Reached max_blobs limit ({max_blobs}), stopping.")
