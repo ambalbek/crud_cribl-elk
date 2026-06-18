@@ -424,18 +424,22 @@ def fetch_apmids_from_blob(
             app_prefix = f"{date_prefix}/{app_name_dir}/"
             found = False
             tried = 0
+            empty_files = 0
+            no_apmid_files = 0
+            error_files = 0
             max_per_region = 5
 
             regions = [region_filter.lower()] if region_filter else KNOWN_REGIONS
 
-            # Try files from each region until we find an apmId
             for region in regions:
                 if found:
                     break
                 region_prefix = f"{app_prefix}{region}/"
                 region_tried = 0
+                region_listed = 0
 
                 for blob in container_client.list_blobs(name_starts_with=region_prefix):
+                    region_listed += 1
                     bname = blob.name
                     if not bname.endswith(".json.gz"):
                         continue
@@ -451,6 +455,14 @@ def fetch_apmids_from_blob(
 
                     tried += 1
                     region_tried += 1
+
+                    # Skip empty blobs without downloading
+                    if blob.size is not None and blob.size == 0:
+                        empty_files += 1
+                        if region_tried >= max_per_region:
+                            break
+                        continue
+
                     try:
                         result = _extract_apmid_from_blob(container_client, bname, app_name_dir, debug)
                         if result:
@@ -464,19 +476,31 @@ def fetch_apmids_from_blob(
                             )
                             found = True
                             break
+                        else:
+                            no_apmid_files += 1
                     except Exception as exc:
+                        error_files += 1
                         blobs_errors += 1
-                        if debug:
-                            print(f"      ERROR reading {bname}: {exc}", file=sys.stderr)
+                        print(
+                            f"      ERROR [{app_name_dir}/{region}] {bname}: {exc}",
+                            file=sys.stderr,
+                        )
 
                     if region_tried >= max_per_region:
                         break
 
+                if debug and not found:
+                    print(
+                        f"      {app_name_dir}/{region}: "
+                        f"listed={region_listed}, criblout={region_tried}, "
+                        f"empty={empty_files}, no_apmid={no_apmid_files}, errors={error_files}"
+                    )
+
             if not found:
-                if tried == 0:
-                    print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no CriblOut files found in {regions}")
-                else:
-                    print(f"    [{app_idx}/{total_apps}] {app_name_dir}: no apmId after {tried} files across {len(regions)} regions")
+                print(
+                    f"    [{app_idx}/{total_apps}] {app_name_dir}: NOT FOUND | "
+                    f"tried={tried}, empty={empty_files}, no_apmid={no_apmid_files}, errors={error_files}"
+                )
 
             if max_blobs and blobs_processed >= max_blobs:
                 print(f"  Reached max_blobs limit ({max_blobs}), stopping.")
