@@ -33,7 +33,6 @@ import sys
 import threading
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -383,7 +382,6 @@ def fetch_apmids_from_blob(
     region_filter: str | None = None,
     env_filter: str | None = None,
     max_blobs: int = 0,
-    max_workers: int = 8,
     debug: bool = False,
 ) -> list[dict]:
     """
@@ -391,8 +389,8 @@ def fetch_apmids_from_blob(
     folder to extract the apmId from the JSON content.
 
     Path pattern: {date}/{appName}/{region}/{env}/CriblOut-*.json.gz
-    Only scans known regions (wau, ftw, azn, azs).
-    Uses ThreadPoolExecutor for parallel downloads.
+    Only scans known regions (northcentralus, southcentralus, waukeegan, fortworth).
+    Downloads one blob per app/region/env folder sequentially.
 
     Returns list of dicts: [{apmId, appName, event_count}, ...]
     """
@@ -401,7 +399,6 @@ def fetch_apmids_from_blob(
     counter: Counter = Counter()  # (apmId, appName) -> count
     blobs_processed = 0
     blobs_errors = 0
-    lock = threading.Lock()
 
     for date_prefix in date_prefixes:
         print(f"  Scanning date: {date_prefix}")
@@ -438,27 +435,20 @@ def fetch_apmids_from_blob(
             if not blobs_to_read:
                 continue
 
-            # Download in parallel to extract apmId
+            # Download one blob at a time to extract apmId
             app_ok = 0
             app_err = 0
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {
-                    pool.submit(_extract_apmid_from_blob, container_client, name, app_name_dir): name
-                    for name in blobs_to_read
-                }
-                for future in as_completed(futures):
-                    try:
-                        result = future.result()
-                        if result:
-                            apm_id, app_name = result
-                            with lock:
-                                counter[(apm_id, app_name)] += 1
-                        app_ok += 1
-                    except Exception as exc:
-                        app_err += 1
-                        if debug:
-                            blob_name = futures[future]
-                            print(f"      ERROR reading {blob_name}: {exc}", file=sys.stderr)
+            for blob_name in blobs_to_read:
+                try:
+                    result = _extract_apmid_from_blob(container_client, blob_name, app_name_dir, debug)
+                    if result:
+                        apm_id, app_name = result
+                        counter[(apm_id, app_name)] += 1
+                    app_ok += 1
+                except Exception as exc:
+                    app_err += 1
+                    if debug:
+                        print(f"      ERROR reading {blob_name}: {exc}", file=sys.stderr)
 
             blobs_processed += app_ok
             blobs_errors += app_err
@@ -629,7 +619,6 @@ def main():
     parser.add_argument("--region", help="Filter blobs by region (e.g. eastus)")
     parser.add_argument("--env", help="Filter blobs by environment (e.g. prod, dev)")
     parser.add_argument("--max-blobs", type=int, default=0, help="Max blobs to process (0=unlimited)")
-    parser.add_argument("--workers", type=int, default=8, help="Parallel blob download threads (default: 8)")
     parser.add_argument("--output", "-o", help="Save CSV to file")
     parser.add_argument("--json-output", help="Save JSON to file")
     parser.add_argument("--debug", action="store_true", help="Print debug info")
@@ -680,7 +669,6 @@ def main():
         region_filter=args.region,
         env_filter=args.env,
         max_blobs=args.max_blobs,
-        max_workers=args.workers,
         debug=args.debug,
     )
     print(f"\n  Found {len(apmids)} unique apmIds")
