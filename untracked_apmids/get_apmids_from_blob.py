@@ -53,7 +53,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONTAINER = "default"
-KNOWN_REGIONS = ["northcentralus", "southcentralus", "waukeegan", "fortworth"]
 BLOB_PREFIX_DATE_FMT = "%Y/%m/%d"
 CRIBL_CLOUD_LOGIN_URL = "https://login.cribl.cloud/oauth/token"
 CRIBL_CLOUD_AUDIENCE = "https://api.cribl.cloud"
@@ -352,7 +351,9 @@ def discover_app_dirs(container_client: ContainerClient, date_prefix: str) -> li
     return app_dirs
 
 
-def _extract_apmid_from_blob(container_client: ContainerClient, blob_name: str, app_name_dir: str, debug: bool = False) -> tuple[str, str] | None:
+def _extract_apmid_from_blob(
+    container_client: ContainerClient, blob_name: str, app_name_dir: str, debug: bool = False,
+) -> tuple[str, str] | None:
     """Download one blob, read first valid JSON line, extract apmId. Returns (apmId, appName) or None."""
     blob_data = container_client.download_blob(blob_name).readall()
     with gzip.open(io.BytesIO(blob_data), "rt", encoding="utf-8") as gz:
@@ -365,14 +366,17 @@ def _extract_apmid_from_blob(container_client: ContainerClient, blob_name: str, 
                 apm_id = event.get("apmId")
                 if apm_id:
                     app_name = event.get("appName") or app_name_dir
-                    print(f"      {blob_name} -> apmId={apm_id}")
+                    if debug:
+                        print(f"      {blob_name} -> apmId={apm_id}")
                     return (str(apm_id), str(app_name))
                 else:
-                    print(f"      {blob_name} -> no apmId field. Keys: {sorted(event.keys())}")
+                    if debug:
+                        print(f"      {blob_name} -> no apmId field. Keys: {sorted(event.keys())}")
                     return None
             except json.JSONDecodeError:
                 continue
-    print(f"      {blob_name} -> empty or no valid JSON lines")
+    if debug:
+        print(f"      {blob_name} -> empty or no valid JSON lines")
     return None
 
 
@@ -389,13 +393,12 @@ def fetch_apmids_from_blob(
     folder to extract the apmId from the JSON content.
 
     Path pattern: {date}/{appName}/{region}/{env}/CriblOut-*.json.gz
-    Only scans known regions (northcentralus, southcentralus, waukeegan, fortworth).
+    Auto-discovers region subdirectories per app.
     Downloads one blob per app/region/env folder sequentially.
 
     Returns list of dicts: [{apmId, appName, event_count}, ...]
     """
     date_prefixes = generate_date_prefixes(days)
-    regions = [region_filter.lower()] if region_filter else KNOWN_REGIONS
     counter: Counter = Counter()  # (apmId, appName) -> count
     blobs_processed = 0
     blobs_errors = 0
@@ -411,18 +414,17 @@ def fetch_apmids_from_blob(
             # Collect one blob per app/region/env folder
             blobs_to_read: list[str] = []
 
-            # Auto-discover region subdirs for this app
+            # Auto-discover region subdirs: {date}/{appName}/{region}/
             app_prefix = f"{date_prefix}/{app_name_dir}/"
             discovered_regions: list[str] = []
             for item in container_client.walk_blobs(name_starts_with=app_prefix, delimiter="/"):
+                # item.name looks like "2026/06/18/myApp/northcentralus/"
                 name = item.name.rstrip("/")
                 parts = name.split("/")
-                if len(parts) == 5:
-                    region_name = parts[4]
-                elif len(parts) == 4:
-                    region_name = parts[3]
-                else:
+                # Expect 5 parts: YYYY/MM/DD/appName/region
+                if len(parts) != 5:
                     continue
+                region_name = parts[4]
                 if region_filter and region_name.lower() != region_filter.lower():
                     continue
                 discovered_regions.append(region_name)
@@ -464,8 +466,7 @@ def fetch_apmids_from_blob(
                     app_ok += 1
                 except Exception as exc:
                     app_err += 1
-                    if debug:
-                        print(f"      ERROR reading {blob_name}: {exc}", file=sys.stderr)
+                    print(f"      ERROR reading {blob_name}: {exc}", file=sys.stderr)
 
             blobs_processed += app_ok
             blobs_errors += app_err
