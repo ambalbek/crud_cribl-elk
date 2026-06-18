@@ -321,6 +321,108 @@ An appId is shown in output only if **all** of these are true:
 
 ---
 
+## Blob Storage Script (`get_apmids_from_blob.py`)
+
+Alternative to `get_apmids_from_elk.py` — reads appIds directly from the Azure Blob default container instead of querying ELK.
+
+### Blob Path Pattern
+
+```
+{container}/{YYYY}/{MM}/{DD}/{appName}/{region}/{env}/CriblOut-*.json.gz
+```
+
+Example: `default/2026/06/17/my-app/ftw/prod/CriblOut-0001.json.gz`
+
+Known regions: `wau`, `ftw`, `azn`, `azs`
+
+### Requirements
+
+```bash
+pip install requests azure-storage-blob
+# Optional, for managed identity auth:
+pip install azure-identity
+```
+
+### Quick Start
+
+```bash
+# 1. Add blob_storage section to config.json (see below)
+# 2. Run (defaults to today only)
+python get_apmids_from_blob.py --config config.json
+
+# 3. With output
+python get_apmids_from_blob.py --config config.json -o results.csv
+
+# 4. With filters
+python get_apmids_from_blob.py --config config.json --region ftw --env prod
+
+# 5. Look back 7 days
+python get_apmids_from_blob.py --config config.json --days 7
+```
+
+### Config — `blob_storage` Section
+
+Add to your `config.json`:
+
+```json
+{
+  "blob_storage": {
+    "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
+    "container": "default"
+  }
+}
+```
+
+Auth options (pick one):
+
+| Method | Config keys |
+|--------|-------------|
+| Connection string | `blob_storage.connection_string` |
+| Account URL + key | `blob_storage.account_url` + `blob_storage.account_key` |
+| Account URL + SAS | `blob_storage.account_url` + `blob_storage.sas_token` |
+| Account name + key | `blob_storage.account_name` + `blob_storage.account_key` |
+| Managed identity | `blob_storage.account_url` (requires `azure-identity`) |
+
+### CLI Reference
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config PATH` | | JSON config file (required) |
+| `--days N` | 1 | Look back N days (1 = today only) |
+| `--region NAME` | all 4 | Filter to one region (wau/ftw/azn/azs) |
+| `--env NAME` | all | Filter to one environment (e.g. prod, dev) |
+| `--max-blobs N` | 0 | Max blobs to process (0 = unlimited) |
+| `--output PATH` / `-o` | | Save results to CSV |
+| `--json-output PATH` | | Save results to JSON |
+| `--debug` | false | Print debug info |
+
+### How It Works
+
+1. Generates date prefixes from today (or `--days N`)
+2. Discovers `appName` directories under each date using directory listing
+3. For each appName, scans only the 4 known regions (`wau`, `ftw`, `azn`, `azs`)
+4. Reads **first 2 log lines** per `CriblOut-*.json.gz` file to extract `apmId`
+5. Deduplicates — keeps unique `apmId`/`appName` pairs with event counts
+6. Fetches Cribl destinations + routes and matches each apmId
+7. Reports status: `CONFIGURED`, `MISSING_ROUTE`, `MISSING_DESTINATION`, `MISSING_BOTH`
+
+### Output
+
+Console table with status markers:
+
+```
+apmId          appName     Events   Has Dest   Destination      Has Route   Route      Status
+----------------------------------------------------------------------------------------------
+my-new-app     MyApp            2        NO    NONE                    NO   NONE       MISSING_BOTH <<<
+tracked-app    Tracker          2       YES    azure_blob:xyz         YES   route-1    CONFIGURED
+```
+
+CSV includes: `apmId`, `appName`, `event_count`, `has_destination`, `destination_id`, `has_route`, `route_id`, `status`
+
+A separate `_missing_only.csv` is also generated with only unconfigured appIds.
+
+---
+
 ## Troubleshooting
 
 ### "Group 'X': expected JSON but got..."

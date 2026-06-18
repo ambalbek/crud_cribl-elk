@@ -26,6 +26,15 @@
     "lookup": "APP_foo.json"
   },
 
+  "blob_storage": {
+    "connection_string": "",
+    "account_url": "https://ACCOUNT.blob.core.windows.net",
+    "account_name": "",
+    "account_key": "",
+    "sas_token": "",
+    "container": "default"
+  },
+
   "source_elasticsearch": {
     "url": "https://elk.internal:9200",
     "index": "logs-k8s-container-all*",

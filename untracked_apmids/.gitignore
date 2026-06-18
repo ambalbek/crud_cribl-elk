@@ -12,3 +12,8 @@ appids_without_destination_*.json
 
 # Logs
 *.log
+
+# Claude Code
+.claude/
+.claudeignore
+CLAUDE.md
