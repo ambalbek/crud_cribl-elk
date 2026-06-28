@@ -33,6 +33,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -361,12 +362,13 @@ def fetch_apmids_from_blob(
     region_filter: str | None = None,
     env_filter: str | None = None,
     max_blobs: int = 0,
+    max_workers: int = 10,
     debug: bool = False,
 ) -> list[dict]:
     """
     List ALL CriblOut-*.json.gz blobs under each date prefix.
     Group by parent folder, pick the largest file per folder, download it
-    to extract apmId from the JSON content.
+    in parallel to extract apmId from the JSON content.
 
     No assumptions about path depth — works with any folder structure.
 
@@ -424,29 +426,40 @@ def fetch_apmids_from_blob(
             print(f"    No CriblOut files found for {date_prefix}")
             continue
 
-        # Phase 2: Download ONE file per folder (the biggest), extract apmId
+        # Phase 2: Download ONE file per folder in parallel, extract apmId
         total_folders = len(folders)
-        for folder_idx, (folder_key, (bname, size)) in enumerate(sorted(folders.items()), 1):
-            try:
-                result = _extract_apmid_from_blob(container_client, bname, folder_key, debug)
-                blobs_processed += 1
-                if result:
-                    apm_id, app_name = result
-                    counter[(apm_id, app_name)] += 1
-                    print(
-                        f"    [{folder_idx}/{total_folders}] apmId={apm_id} "
-                        f"(size={size}) | total: {len(counter)} unique apmIds"
-                    )
-                else:
-                    if debug:
-                        print(f"    [{folder_idx}/{total_folders}] no apmId in {bname} (size={size})")
-            except Exception as exc:
-                blobs_errors += 1
-                print(f"    [{folder_idx}/{total_folders}] ERROR {bname}: {exc}", file=sys.stderr)
+        folder_items = sorted(folders.items())
+        if max_blobs:
+            folder_items = folder_items[:max_blobs]
 
-            if max_blobs and blobs_processed >= max_blobs:
-                print(f"  Reached max_blobs limit ({max_blobs}), stopping.")
-                break
+        print(f"    Downloading {len(folder_items)} files ({max_workers} threads)...")
+        completed = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_info = {
+                pool.submit(
+                    _extract_apmid_from_blob, container_client, bname, folder_key, debug
+                ): (folder_key, bname, size)
+                for folder_key, (bname, size) in folder_items
+            }
+            for future in as_completed(future_to_info):
+                folder_key, bname, size = future_to_info[future]
+                completed += 1
+                try:
+                    result = future.result()
+                    blobs_processed += 1
+                    if result:
+                        apm_id, app_name = result
+                        counter[(apm_id, app_name)] += 1
+                        print(
+                            f"    [{completed}/{total_folders}] apmId={apm_id} "
+                            f"(size={size}) | total: {len(counter)} unique apmIds"
+                        )
+                    else:
+                        if debug:
+                            print(f"    [{completed}/{total_folders}] no apmId in {bname} (size={size})")
+                except Exception as exc:
+                    blobs_errors += 1
+                    print(f"    [{completed}/{total_folders}] ERROR {bname}: {exc}", file=sys.stderr)
 
         print(f"    {blobs_processed} blobs processed total so far")
 
@@ -604,6 +617,7 @@ def main():
     parser.add_argument("--region", help="Filter blobs by region (e.g. eastus)")
     parser.add_argument("--env", help="Filter blobs by environment (e.g. prod, dev)")
     parser.add_argument("--max-blobs", type=int, default=0, help="Max blobs to process (0=unlimited)")
+    parser.add_argument("--workers", type=int, default=10, help="Parallel download threads (default: 10)")
     parser.add_argument("--output", "-o", help="Save CSV to file")
     parser.add_argument("--json-output", help="Save JSON to file")
     parser.add_argument("--debug", action="store_true", help="Print debug info")
@@ -654,6 +668,7 @@ def main():
         region_filter=args.region,
         env_filter=args.env,
         max_blobs=args.max_blobs,
+        max_workers=args.workers,
         debug=args.debug,
     )
     print(f"\n  Found {len(apmids)} unique apmIds")
