@@ -625,6 +625,49 @@ chmod 600 /opt/cribl-audit/config.json
 pip install requests
 ```
 
+### Offline Installation (Air-Gapped / No Internet)
+
+If the target Linux host has no internet access, download wheel files from a
+connected machine first, then transfer them.
+
+**Step 1 — Download wheels (on a machine with internet):**
+
+```bash
+# For Linux x86_64, Python 3.11
+pip download requests urllib3 azure-storage-blob \
+  --dest ./wheels \
+  --platform manylinux2014_x86_64 \
+  --python-version 311 \
+  --only-binary=:all:
+```
+
+Adjust flags for your target environment:
+
+| Flag | Example values |
+|------|----------------|
+| `--platform` | `manylinux2014_x86_64`, `manylinux2014_aarch64` |
+| `--python-version` | `39` (3.9), `310` (3.10), `311` (3.11), `312` (3.12) |
+
+If some packages fail with *"no matching distribution"*, try adding multiple
+platform tags:
+
+```bash
+--platform manylinux2014_x86_64 \
+--platform manylinux_2_17_x86_64 \
+--platform linux_x86_64
+```
+
+**Step 2 — Transfer the `wheels/` directory** to the offline host (e.g., via
+`scp`, USB drive, or shared mount).
+
+**Step 3 — Install from local wheels on the offline host:**
+
+```bash
+pip install --no-index --find-links=./wheels requests urllib3 azure-storage-blob
+```
+
+> `--no-index` tells pip to skip PyPI entirely and only use the local directory.
+
 ### Recommended Workflow
 
 ```bash
