@@ -235,7 +235,13 @@ def main():
 
     def POST(url, payload):
         log.debug(f"POST {url}")
-        return session.post(url, headers=H(), json=payload, timeout=60)
+        rp = session.post(url, headers=H(), json=payload, timeout=60,
+                          allow_redirects=False)
+        if rp.is_redirect or rp.status_code in (301, 302, 307, 308):
+            log.warning(f"[REDIRECT] POST {url} -> {rp.status_code} Location: {rp.headers.get('Location')}")
+            # Follow the redirect manually so the caller still gets a final response
+            return session.post(url, headers=H(), json=payload, timeout=60)
+        return rp
 
     def PATCH(url, payload):
         log.debug(f"PATCH {url}")
@@ -408,7 +414,10 @@ def main():
         if "name" in dest:
             dest["name"] = dest_id
 
+        log.info(f"[DEBUG] POST URL: {outputs_url}")
+        log.info(f"[DEBUG] dest payload id: {dest.get('id')}, type: {dest.get('type')}")
         rp = POST(outputs_url, dest)
+        log.info(f"[DEBUG] Response status: {rp.status_code}, URL after redirect: {rp.url}, history: {[r.status_code for r in rp.history]}")
         if rp.status_code in (200, 201):
             log.info(f"[OK] Created destination {dest_id}")
         else:
