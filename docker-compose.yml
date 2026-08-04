@@ -28,34 +28,31 @@ services:
       elasticsearch:
         condition: service_healthy
 
-  logstash:
-    image: docker.elastic.co/logstash/logstash:8.17.0
+  # ── Observability ───────────────────────────────────────────────────────────
+  apm-server:
+    image: docker.elastic.co/apm/apm-server:8.17.0
     restart: unless-stopped
-    volumes:
-      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
-    environment:
-      - LS_JAVA_OPTS=-Xms256m -Xmx256m
-      - XPACK_MONITORING_ENABLED=false
+    command: >
+      apm-server -e
+        -E apm-server.host=0.0.0.0:8200
+        -E output.elasticsearch.hosts=["http://elasticsearch:9200"]
+        -E apm-server.kibana.enabled=true
+        -E apm-server.kibana.host=http://kibana:5601
+        -E setup.kibana.host=http://kibana:5601
+        -E apm-server.secret_token=
     ports:
-      - "127.0.0.1:5044:5044"   # traces
-      - "127.0.0.1:5045:5045"   # metrics
-      - "127.0.0.1:5046:5046"   # logs
+      - "127.0.0.1:8200:8200"   # APM / OTLP receiver
     depends_on:
       elasticsearch:
         condition: service_healthy
-
-  # ── Observability ───────────────────────────────────────────────────────────
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
-    restart: unless-stopped
-    volumes:
-      - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
-    ports:
-      - "127.0.0.1:4317:4317"   # OTLP gRPC
-      - "127.0.0.1:4318:4318"   # OTLP HTTP
-    depends_on:
-      logstash:
+      kibana:
         condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "apm-server export config > /dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   cribl-edge:
     image: cribl/cribl:latest
@@ -69,8 +66,8 @@ services:
       - ./cribl-edge/local/cribl/inputs.yml:/opt/cribl/local/cribl/inputs.yml
       - ./cribl-edge/local/cribl/outputs.yml:/opt/cribl/local/cribl/outputs.yml
     depends_on:
-      logstash:
-        condition: service_started
+      elasticsearch:
+        condition: service_healthy
 
   cribl-framework:
     build: .
@@ -83,7 +80,7 @@ services:
     environment:
       - LOG_LEVEL=INFO
       - LOG_FORMAT=${LOG_FORMAT:-text}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://apm-server:8200}
       - CRIBL_SERVICE_URL=http://cribl_service:8001
       - ECE_SERVICE_URL=http://ece_service:8002
     depends_on:
@@ -111,7 +108,7 @@ services:
     environment:
       - LOG_LEVEL=INFO
       - LOG_FORMAT=${LOG_FORMAT:-text}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://apm-server:8200}
       - CRIBL_BASE_URL=${CRIBL_BASE_URL:-}
       - CRIBL_TOKEN=${CRIBL_TOKEN:-}
       - CRIBL_USERNAME=${CRIBL_USERNAME:-}
@@ -144,7 +141,7 @@ services:
     environment:
       - LOG_LEVEL=INFO
       - LOG_FORMAT=${LOG_FORMAT:-text}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://apm-server:8200}
       # Elasticsearch — nonprod
       - ECE_ES_URL=${ECE_ES_URL:-}
       - ECE_ES_TOKEN=${ECE_ES_TOKEN:-}

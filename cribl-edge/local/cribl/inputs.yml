@@ -1,0 +1,24 @@
+inputs:
+  in_open_telemetry:
+    type: open_telemetry
+    disabled: false
+    sendToRoutes: false
+    host: 0.0.0.0
+    port: 4317
+    tls:
+      disabled: true
+    connections:
+      - output: es_direct
+  http:
+    type: http
+    disabled: false
+    sendToRoutes: false
+    host: 0.0.0.0
+    port: 10080
+    tls:
+      disabled: true
+    criblAPI: /cribl
+    splunkHecAPI: /services/collector
+    elasticAPI: /elastic
+    connections:
+      - output: es_direct

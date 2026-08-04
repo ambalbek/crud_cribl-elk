@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: etn-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: etn_user
+      POSTGRES_PASSWORD: etn_pass
+      POSTGRES_DB: etn_onboarding
+    volumes:
+      - etn_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etn_user -d etn_onboarding"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  etn-onboarding:
+    build: .
+    container_name: etn-onboarding
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://etn_user:etn_pass@postgres:5432/etn_onboarding"
+      SECRET_KEY: "${SECRET_KEY:-change-me-in-production}"
+      CRIBL_BASE_URL: "${CRIBL_BASE_URL:-}"
+      CRIBL_TOKEN: "${CRIBL_TOKEN:-}"
+      ECE_ES_URL: "${ECE_ES_URL:-}"
+      ECE_ES_TOKEN: "${ECE_ES_TOKEN:-}"
+      ETN_PORTAL_URL: "${ETN_PORTAL_URL:-}"
+      ETN_PORTAL_API_KEY: "${ETN_PORTAL_API_KEY:-}"
+      HARNESS_BASE_URL: "${HARNESS_BASE_URL:-}"
+      HARNESS_API_KEY: "${HARNESS_API_KEY:-}"
+      HARNESS_ACCOUNT_ID: "${HARNESS_ACCOUNT_ID:-}"
+      OTEL_SERVICE_NAME: "etn-onboarding"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+
+volumes:
+  etn_pgdata:

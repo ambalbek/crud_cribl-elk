@@ -1,0 +1,46 @@
+replicaCount: 2
+
+image:
+  repository: etn-onboarding
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 5000
+
+postgresql:
+  enabled: true
+  auth:
+    username: etn_user
+    password: etn_pass
+    database: etn_onboarding
+  storage:
+    size: 5Gi
+    storageClass: ""
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+env:
+  CRIBL_BASE_URL: ""
+  CRIBL_TOKEN: ""
+  ECE_ES_URL: ""
+  ECE_ES_TOKEN: ""
+  ETN_PORTAL_URL: ""
+  ETN_PORTAL_API_KEY: ""
+  HARNESS_BASE_URL: ""
+  HARNESS_API_KEY: ""
+  HARNESS_ACCOUNT_ID: ""
+  OTEL_SERVICE_NAME: "etn-onboarding"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+
+route:
+  enabled: true
+  host: ""
+  tlsTermination: edge

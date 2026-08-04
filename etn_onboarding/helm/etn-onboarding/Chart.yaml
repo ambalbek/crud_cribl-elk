@@ -1,0 +1,6 @@
+apiVersion: v2
+name: etn-onboarding
+description: ETN Onboarding Portal — automated application onboarding into Cribl Stream and ECE
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

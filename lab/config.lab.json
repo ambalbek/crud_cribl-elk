@@ -1,0 +1,84 @@
+{
+  "_comment": "LAB config — all credentials are local-only, no external access.",
+
+  "secret_key": "lab-only-secret-key-not-for-production-use-1234567890abcdef",
+
+  "auth": {
+    "session_lifetime_minutes": 480,
+    "secure_cookie": false,
+    "local_admins": [
+      {
+        "username": "admin",
+        "password": "admin",
+        "display_name": "Lab Admin"
+      }
+    ],
+    "local_users": [
+      {
+        "username": "user",
+        "password": "user",
+        "display_name": "Lab User"
+      }
+    ]
+  },
+
+  "base_url": "http://localhost:9000",
+  "cribl_urls": ["http://localhost:9000"],
+  "elk_urls": [],
+  "skip_ssl": false,
+
+  "credentials": {
+    "token": "",
+    "username": "",
+    "password": ""
+  },
+
+  "route_templates": {
+    "azn": "route_template_azn.json",
+    "azs": "route_template_azs.json"
+  },
+  "dest_prefixes": {
+    "azn": "hcsc-blob-storage-northcentralus",
+    "azs": "hcsc-blob-storage-southcentralus"
+  },
+  "snapshot_dir": "cribl_snapshots",
+  "min_existing_total_routes": 1,
+  "diff_lines": 3,
+
+  "workspaces": {
+    "dev": {
+      "worker_groups": ["default"],
+      "dest_templates": {
+        "azn": "blob_dest_template_azn_dev.json",
+        "azs": "blob_dest_template_azs_dev.json"
+      },
+      "description": "Lab Development workspace"
+    }
+  },
+
+  "admin_secret": "lab-admin-secret-not-for-production",
+
+  "iiq_url": "https://iiq.example.com/MOYAACESS",
+
+  "datastream": {
+    "elk_url":  "http://elasticsearch:9200",
+    "token":    "",
+    "username": "",
+    "password": "",
+    "index":    "cribl-onboarding-requests",
+    "skip_ssl": false,
+    "timeout":  30
+  },
+
+  "entitlement": {
+    "clusters": [
+      {
+        "name": "local",
+        "url": "http://elasticsearch:9200",
+        "username": "",
+        "password": ""
+      }
+    ],
+    "entitlementFilter": "entitlements"
+  }
+}

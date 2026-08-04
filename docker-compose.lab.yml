@@ -1,0 +1,39 @@
+# docker-compose.lab.yml — Lab overlay
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.lab.yml up --build -d
+#
+# Points all three app services at the local ELK stack so the full
+# onboarding lifecycle can be exercised end-to-end without external deps.
+
+services:
+  cribl-framework:
+    volumes:
+      - ./lab/config.lab.json:/app/config.json:ro
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  cribl_service:
+    environment:
+      - LOG_LEVEL=DEBUG
+      - CRIBL_BASE_URL=
+      - CRIBL_TOKEN=
+      - CRIBL_USERNAME=
+      - CRIBL_PASSWORD=
+
+  ece_service:
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ECE_ES_URL=http://elasticsearch:9200
+      - ECE_ES_TOKEN=
+      - ECE_ES_USERNAME=
+      - ECE_ES_PASSWORD=
+      - ECE_ES_URL_PROD=http://elasticsearch:9200
+      - ECE_ES_TOKEN_PROD=
+      - ECE_ES_USERNAME_PROD=
+      - ECE_ES_PASSWORD_PROD=
+      - ECE_KIBANA_URL=http://kibana:5601
+      - ECE_KIBANA_TOKEN=
+      - ECE_KIBANA_USERNAME=
+      - ECE_KIBANA_PASSWORD=
+      - ECE_SKIP_SSL=false

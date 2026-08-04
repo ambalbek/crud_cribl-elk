@@ -1,0 +1,27 @@
+# Elastic Agent standalone config — APM Server integration
+# Receives OTLP traces/metrics/logs and ships to local Elasticsearch.
+
+outputs:
+  default:
+    type: elasticsearch
+    hosts:
+      - "http://elasticsearch:9200"
+
+inputs:
+  - type: apm
+    enabled: true
+    apm-server:
+      host: "0.0.0.0:8200"
+      # Accept OTLP natively
+      otlp:
+        enabled: true
+        grpc:
+          enabled: true
+          endpoint: "0.0.0.0:8200"
+        http:
+          enabled: true
+          endpoint: "0.0.0.0:8200"
+      # No auth for lab
+      secret_token: ""
+      rum:
+        enabled: false

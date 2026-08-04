@@ -1,0 +1,23 @@
+{{- if .Values.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ .Release.Name }}-etn-onboarding
+  labels:
+    app: etn-onboarding
+    release: {{ .Release.Name }}
+spec:
+  {{- if .Values.route.host }}
+  host: {{ .Values.route.host }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ .Release.Name }}-etn-onboarding
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: {{ .Values.route.tlsTermination }}
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+{{- end }}

@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-etn-onboarding
+  labels:
+    app: etn-onboarding
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: etn-onboarding
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: etn-onboarding
+        release: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: etn-onboarding
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 5000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-etn-config
+            - secretRef:
+                name: {{ .Release.Name }}-etn-secret
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://{{ .Values.postgresql.auth.username }}:{{ .Values.postgresql.auth.password }}@{{ .Release.Name }}-etn-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}

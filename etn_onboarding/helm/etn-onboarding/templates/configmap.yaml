@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-etn-config
+  labels:
+    app: etn-onboarding
+    release: {{ .Release.Name }}
+data:
+  CRIBL_BASE_URL: {{ .Values.env.CRIBL_BASE_URL | quote }}
+  ECE_ES_URL: {{ .Values.env.ECE_ES_URL | quote }}
+  ETN_PORTAL_URL: {{ .Values.env.ETN_PORTAL_URL | quote }}
+  HARNESS_BASE_URL: {{ .Values.env.HARNESS_BASE_URL | quote }}
+  HARNESS_ACCOUNT_ID: {{ .Values.env.HARNESS_ACCOUNT_ID | quote }}
+  OTEL_SERVICE_NAME: {{ .Values.env.OTEL_SERVICE_NAME | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.env.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}

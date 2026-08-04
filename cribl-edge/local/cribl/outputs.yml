@@ -1,0 +1,14 @@
+outputs:
+  devnull:
+    type: devnull
+  default:
+    defaultId: es_direct
+    type: default
+  es_direct:
+    type: elastic
+    disabled: false
+    elasticUrl: "http://elasticsearch:9200"
+    index: "otel-{_dataType}-{_index}"
+    concurrency: 5
+    maxPayloadSizeKB: 4096
+    flushPeriodSec: 1
